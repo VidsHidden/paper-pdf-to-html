@@ -1,0 +1,331 @@
+# /// script
+# requires-python = ">=3.11,<3.14"
+# dependencies = [
+#   "pymupdf==2.1", "pymupdf4llm==2.1", "pymupdf-layout==2.1",
+#   "beautifulsoup4==4.15.0", "markdown-it-py==4.0.0", "playwright==1.65.2"
+# ]
+# ///
+"""Build a portable English or English/Simplified Chinese paper reader."""
+import argparse
+from hashlib import sha256
+from html import escape
+from pathlib import Path
+import re
+import sys
+
+from bs4 import BeautifulSoup, NavigableString, Tag
+
+from translate import MARKER, cache_path, chrome_path, is_valid, read_translations, store, translate
+from models import prepare as prepare_models
+from api_translate import Config, translate_api
+
+ASSETS=Path(__file__).resolve().parents[1]/'assets'
+NODES='header h1,h2,h3,h4,h5,h6,p,figcaption,th,td,li'
+TECH=re.compile(r'(?<![A-Za-z0-9])(?:\d+(?:[.,]\d+)*(?:[–-]\d+(?:\.\d+)?)?\s*(?:°C|[μµnmp]?[lLgMsV]|nm|μm|µm|kDa|rpm|mmHg|h|min|%)\b|\d+(?:\.\d+)?\s*%|[⁰¹²³⁴⁵⁶⁷⁸⁹]+[A-Z]|[A-Za-z][A-Za-z0-9_]*(?<=\d)[A-Za-z0-9_]*)(?![A-Za-z0-9\]])')
+FIG=re.compile(r'(?:(Extended\s+Data|Supplementary|Supporting|扩展数据|补充)\s*)?(Fig(?:ure)?\.?|Table|图|表)\s*([A-Z]?\d+)([a-z]?)',re.I)
+CAPTION_TITLE={
+  'abstract':'摘要','introduction':'引言','methods':'方法','materials and methods':'材料与方法',
+  'results':'结果','discussion':'讨论','conclusions':'结论','conclusion':'结论',
+  'references':'参考文献','acknowledgements':'致谢','acknowledgments':'致谢',
+  'data availability':'数据可用性','code availability':'代码可用性',
+}
+def fig_id(match):
+    prefix,kind,number,_panel = match.groups()
+    prefixes={'扩展数据':'extended data','补充':'supplementary'}
+    prefix=prefixes.get(prefix,prefix)
+    kind='table' if kind.casefold() in ('table','表') else 'figure'
+    return 'figure-'+ '-'.join(x.lower().replace(' ','-') for x in (prefix,kind,number) if x)
+
+def link_in_prose(text, ids):
+    output=[]
+    last=0
+    for match in FIG.finditer(text):
+        anchor=fig_id(match)
+        if anchor not in ids:
+            continue
+        output.append(escape(text[last:match.start()]))
+        output.append(f'<a href="#{anchor}">{escape(match.group())}</a>')
+        last=match.end()
+    return ''.join(output)+escape(text[last:])
+
+def article_dom(work):
+    return BeautifulSoup((work/'article.html').read_text(encoding='utf-8'),'html.parser')
+
+def nodes(dom):
+    return [n for n in dom.select(NODES) if not n.select(NODES)
+            and not n.find_parent(['pre','code'])
+            and not n.find_parent('figure', class_='source-page')
+            and re.search('[A-Za-z]{2,}',n.get_text())]
+
+def translation_rows(dom):
+    result=[]
+    in_refs=False
+    section=""
+    for node in nodes(dom):
+        plain=node.get_text(' ',strip=True)
+        if re.fullmatch('h[2-6]',node.name):
+            section=plain
+            in_refs=plain.lower() in ('references','bibliography','literature cited')
+        elif in_refs and node.name in ('p','li'):
+            continue
+        protected=[]
+        def save(html):
+            protected.append(html)
+            return f'[Z{len(protected)}]'
+        def flatten(child):
+            if isinstance(child,NavigableString):
+                return TECH.sub(lambda m:' '+save(escape(m.group()))+' ',str(child))
+            if not isinstance(child,Tag):
+                return ''
+            if child.name in ('a','sup','sub','math','code'):
+                return save(str(child))
+            if child.name=='br':
+                return ' '
+            return ''.join(flatten(c) for c in child.children)
+        text=re.sub(r'\s+',' ',''.join(flatten(c) for c in node.children)).strip()
+        if not text:
+            continue
+        # Include inline-token contents in the key so corrections and retries cannot reuse stale text.
+        identity=sha256((text+'\0'+'\0'.join(protected)).encode()).hexdigest()[:16]
+        result.append({'id':identity,'role':node.name,'text':text,'section':section,'protected':protected,'node':node})
+    return result
+
+def prepare_job(work):
+    rows=translation_rows(article_dom(work))
+    data=[{k:v for k,v in row.items() if k!='node'} for row in rows]
+    store(work/'translation-input.json',data)
+    return data
+
+def split_pair(dom,node,target):
+    orig=dom.new_tag('span',attrs={'lang':'en','class':'source-text'})
+    zh=dom.new_tag('span',attrs={'lang':'zh-Hans','class':'translation-text'})
+    for child in list(node.contents):
+        orig.append(child.extract())
+    for child in list(BeautifulSoup(target,'html.parser').contents):
+        zh.append(child.extract())
+    node.append(orig)
+    node.append(zh)
+    node['class']=(node.get('class') or [])+['parallel']
+
+def target_html(row, text, ids):
+    if not is_valid(text,row):
+        raise ValueError(f'Missing or invalid translation for {row["id"]}: {row["text"][:80]}')
+    result=[]
+    last=0
+    for mark in MARKER.finditer(text):
+        result.append(link_in_prose(text[last:mark.start()],ids))
+        result.append(row['protected'][int(mark[1])-1])
+        last=mark.end()
+    result.append(link_in_prose(text[last:],ids))
+    return ''.join(result)
+
+def add_links(dom, ids):
+    for n in dom.select('p,li'):
+        for node in list(n.find_all(string=True)):
+            if node.find_parent(['a','code','sup','sub']):
+                continue
+            html=link_in_prose(str(node),ids)
+            if '<a ' in html:
+                node.replace_with(*list(BeautifulSoup(html,'html.parser').contents))
+
+def add_reference_links(dom):
+    ref_numbers={}
+    in_refs=False
+    for node in dom.find_all(['h2','h3','h4','h5','h6','ol']):
+        if node.name.startswith('h'):
+            label=node.select_one('.source-text') or node
+            in_refs=label.get_text(' ',strip=True).lower() in ('references','bibliography','literature cited')
+        elif in_refs:
+            start=int(node.get('start',1))
+            for n,item in enumerate(node.find_all('li',recursive=False),start):
+                if n not in ref_numbers:
+                    ref_numbers[n]=f'ref-{n}'
+                    item['id']=ref_numbers[n]
+    if not ref_numbers:
+        return
+    for sup in dom.select('p sup,figcaption sup'):
+        text=sup.get_text()
+        following=sup.find_next_sibling(string=True)
+        if following and re.match(r'^(?:[CNOHPS]|Cl|Ca|Na)(?:\b|[−-])',str(following).lstrip()):
+            continue
+        if not re.fullmatch(r'[\d,–\- ]+',text) or sup.find('a'):
+            continue
+        def link(m):
+            target=ref_numbers.get(int(m[0]))
+            return f'<a class="ref" href="#{target}">{m[0]}</a>' if target else m[0]
+        content=re.sub(r'\d+',link,text)
+        sup.clear()
+        sup.extend(BeautifulSoup(content,'html.parser').contents)
+
+def render(work,output,translation,mode):
+    dom=article_dom(work)
+    title=dom.h1.get_text(strip=True)
+    translations=read_translations(translation) if translation else {}
+    bilingual=translation is not None
+    if bilingual and mode not in ('en','zh','both'):
+        raise ValueError('Unknown reader language mode.')
+    anchor_ids={n['id'] for n in dom.select('[id]')}
+    primary=[]
+    minor=[]
+    for i,h in enumerate(dom.select('h2,h3,h4,h5,h6'),1):
+        anchor=f'section-{i}'
+        h['id']=anchor
+        label=h.get_text(' ',strip=True)
+        if label.lower() in CAPTION_TITLE:
+            h.name='h2'
+            primary.append(h)
+        else:
+            minor.append(h)
+    headings=primary if len(primary)>=3 else primary+minor
+    headings=headings[:20]
+    if bilingual:
+        for row in translation_rows(dom):
+            if row['role'] in ('h2','h3','h4','h5','h6') and row['text'].lower() in CAPTION_TITLE:
+                value=CAPTION_TITLE[row['text'].lower()]
+            else:
+                value=translations.get(row['id'],'')
+            split_pair(dom,row['node'],target_html(row,value,anchor_ids))
+    add_links(dom,anchor_ids)
+    add_reference_links(dom)
+    labels=[]
+    for heading in headings:
+        translated=heading.select_one('.translation-text')
+        label=heading.select_one('.source-text') or heading
+        line=escape(label.get_text(' ',strip=True))
+        if translated:
+            line='<span class="source-text" lang="en">'+line+'</span><span class="translation-text" lang="zh-Hans">'+escape(translated.get_text(' ',strip=True))+'</span>'
+        labels.append(f'<a href="#{heading["id"]}">{line}</a>')
+    control=''
+    lang='en'
+    if bilingual:
+        if mode!='en':
+            lang='zh-Hans'
+        options=''.join(f'<option value="{val}"'+(' selected' if val==mode else '')+f'>{label}</option>'
+            for val,label in [('en','English'),('zh','中文'),('both','中英对照')])
+        control='<div class="language-control" lang="zh-Hans"><label for="reading-language">阅读语言</label><select id="reading-language">'+options+'</select></div>'
+        note=dom.new_tag('p',attrs={'class':'translation-note note-zh','lang':'zh-Hans'})
+        note.string='译文供阅读参考。图内文字、公式图和参考文献条目保留原文。'
+        dom.header.append(note)
+    nav=control+'<a class="brand" href="#top">'+(
+        '<span class="source-text" lang="en">Contents</span><span class="translation-text" lang="zh-Hans">目录</span>' if bilingual else 'Contents'
+        )+'</a><div class="nav-links">'+''.join(labels)+'</div>'
+    css=(ASSETS/'reader.css').read_text()
+    js=(ASSETS/'reader.js').read_text()
+    result=f'''<!doctype html>
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(title)}</title><style>{css}</style></head>
+<body id="top" data-mode="{mode if bilingual else 'en'}"><div class="shell">
+<nav aria-label="Contents">{nav}</nav><main><article>{dom}</article></main></div>
+<dialog aria-label="Enlarged figure"><button class="close" type="button">Close ×</button><div class="enlarged"></div></dialog>
+<script>{js}</script></body></html>'''
+    verify(result)
+    output.parent.mkdir(parents=True,exist_ok=True)
+    pending=output.with_suffix(output.suffix+'.tmp')
+    pending.write_text(result,encoding='utf-8')
+    pending.replace(output)
+
+def verify(html):
+    dom=BeautifulSoup(html,'html.parser')
+    ids=[n['id'] for n in dom.select('[id]')]
+    if len(ids)!=len(set(ids)):
+        raise ValueError('Some anchors are duplicated.')
+    uniq=set(ids)
+    if any(a['href'][1:] not in uniq for a in dom.select('a[href^="#"]')):
+        raise ValueError('Some links point to missing anchors.')
+    if dom.select('script[src],iframe,link[rel="stylesheet"]') or any(not img.get('src','').startswith('data:image/png;base64,') for img in dom.select('img')):
+        raise ValueError('Reader contains external visual or script assets.')
+    if any(len(n.select(':scope > .source-text, :scope > .translation-text'))!=2 for n in dom.select('article .parallel')):
+        raise ValueError('A bilingual text block is incomplete.')
+    return len(dom.select('.page-anchor')),len(dom.select('figure')),len(dom.select('article .translation-text'))
+
+def selected_pages(spec):
+    pages=set()
+    for selection in spec.split(',') if spec else []:
+        points=[int(p) for p in selection.split('-',1)]
+        first,last=points[0],points[-1]
+        if first<1 or first>last:
+            raise ValueError(f'Invalid PDF page range: {selection}')
+        pages.update(range(first,last+1))
+    return pages
+
+def cli():
+    parser=argparse.ArgumentParser(description=__doc__)
+    commands=parser.add_subparsers(dest='command',required=True)
+    def extraction_options(cmd):
+        cmd.add_argument('pdf',type=Path)
+        cmd.add_argument('--work',type=Path,required=True)
+        cmd.add_argument('--ocr',choices=['auto','off','force'],default='auto')
+        cmd.add_argument('--ocr-language',default='eng')
+        cmd.add_argument('--facsimile',help='Original page image only, e.g. 33-37')
+    def translator_option(cmd):
+        cmd.add_argument('--translator',choices=['local','api','deepseek'],default='local',
+                         help='Simplified Chinese translation backend (default: local)')
+    convert=commands.add_parser('convert')
+    extraction_options(convert)
+    translator_option(convert)
+    convert.add_argument('output',type=Path)
+    convert.add_argument('--mode',choices=['en','zh','both'],default='both')
+    prep=commands.add_parser('prepare')
+    extraction_options(prep)
+    mt=commands.add_parser('translate')
+    translator_option(mt)
+    mt.add_argument('--work',type=Path,required=True)
+    build=commands.add_parser('render')
+    translator_option(build)
+    build.add_argument('--work',type=Path,required=True)
+    build.add_argument('output',type=Path)
+    build.add_argument('--mode',choices=['en','zh','both'],default='both')
+    build.add_argument('--translations',type=Path)
+    commands.add_parser('models')
+    commands.add_parser('deepseek-setup',help='Save a DeepSeek key using a masked Mac prompt')
+    test=commands.add_parser('verify')
+    test.add_argument('html',type=Path)
+    args=parser.parse_args()
+    if args.command=='models':
+        prepare_models(cache_path(),chrome_path())
+    elif args.command=='deepseek-setup':
+        from deepseek_keychain import setup_key
+        setup_key()
+    elif args.command=='verify':
+        print('pages=%d, figures/tables=%d, translated blocks=%d'%verify(args.html.read_text(encoding='utf-8')))
+    else:
+        needs_translation=args.command=='translate' or (args.command=='convert' and args.mode!='en')
+        translator=getattr(args,'translator','local')
+        api_config=None
+        if needs_translation and translator=='api':
+            api_config=Config.from_env()
+        elif needs_translation and translator=='deepseek':
+            api_config=Config.deepseek()
+        translation_name={
+            'local':'translations.json',
+            'api':'translations-api.json',
+            'deepseek':'translations-deepseek.json',
+        }[translator]
+        if args.command in ('prepare','convert'):
+            from extract import extract
+            if args.command=='convert' and args.output.resolve()==args.pdf.resolve():
+                raise ValueError('The HTML output cannot replace the source PDF.')
+            audit=extract(args.pdf,args.work,ocr=args.ocr,language=args.ocr_language,facade=selected_pages(args.facsimile))
+            print(f'Parsed {len(audit["pages"])} pages; visuals: {audit["counts"]}; unmatched captions: {len(audit["unmatched_captions"])}',flush=True)
+            rows=prepare_job(args.work)
+        if needs_translation:
+            if args.command=='translate':
+                rows=prepare_job(args.work)
+            output=args.work/translation_name
+            if api_config:
+                translate_api(rows,args.work,api_config,output)
+            else:
+                translate(rows,output,prepare_models)
+            print(f'Prepared {len(rows)} aligned blocks using the {translator} translator.',flush=True)
+        if args.command in ('render','convert'):
+            translation=getattr(args,'translations',None) or (args.work/translation_name if args.mode!='en' else None)
+            if args.mode!='en' and (translation is None or not translation.is_file()):
+                raise ValueError('Run translate or provide a translation JSON before creating a bilingual reader.')
+            render(args.work,args.output,translation,args.mode)
+            print(args.output.resolve())
+
+if __name__=='__main__':
+    try:
+        cli()
+    except (OSError,ValueError,RuntimeError) as exc:
+        sys.exit(str(exc))

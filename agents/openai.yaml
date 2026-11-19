@@ -1,0 +1,4 @@
+interface:
+  display_name: "论文 PDF 转 HTML"
+  short_description: "把论文 PDF 转成可离线打开、可切换中英对照的单文件阅读版"
+  default_prompt: "用 $paper-pdf-to-html 把这份论文 PDF 转成离线可读、能切换原文、中文和逐段中英对照的 HTML。"

@@ -1,0 +1,269 @@
+"""Extract ordered reading blocks and clipped visuals from an academic PDF."""
+from dataclasses import dataclass
+from html import escape
+from pathlib import Path
+import base64
+import json
+import re
+
+from bs4 import BeautifulSoup
+from markdown_it import MarkdownIt
+import pymupdf
+import pymupdf4llm
+
+MD = MarkdownIt('commonmark', {'html': True}).enable('table')
+ALLOWED = set('a p strong em b i sup sub s del u mark br h1 h2 h3 h4 h5 h6 ul ol li blockquote pre code table thead tbody tfoot tr th td hr'.split())
+VISUAL = {'picture', 'formula'}
+LABEL = re.compile(r'^(?:(extended\s+data|supplementary|supporting)\s+)?(fig(?:ure)?\.?|table)\s*([A-Z]?\d+[A-Z]?)(?=\s*(?:[.｜|:]|$)|\s)', re.I)
+
+@dataclass
+class Box:
+    page: int
+    kind: str
+    rect: pymupdf.Rect
+    html: str
+    text: str
+    label: str = ''
+    used: bool = False
+
+def clean_html(value):
+    dom = BeautifulSoup(MD.render(value), 'html.parser')
+    for tag in list(dom.find_all(True)):
+        if tag.name is None:
+            continue
+        if tag.name in ('script','style','iframe','object','embed','svg','img','video','audio','form'):
+            tag.decompose()
+        elif tag.name not in ALLOWED:
+            tag.unwrap()
+        else:
+            keep = {}
+            if tag.name == 'a' and tag.get('href'):
+                uri = tag.get('href').strip()
+                if re.match(r'^(?:https?://|mailto:)', uri,re.I):
+                    keep['href']=uri
+            for attr in ('colspan','rowspan','start'):
+                if str(tag.get(attr,'')).isdigit():
+                    keep[attr]=tag[attr]
+            tag.attrs = keep
+    return str(dom).strip(), dom.get_text(' ', strip=True)
+
+def key_for(match):
+    prefix,kind,number = match.groups()
+    return ' '.join(x.casefold() for x in (prefix,'table' if kind.lower()=='table' else 'figure',number) if x)
+
+def by_columns(boxes, width):
+    if len(boxes)<4:
+        return sorted(boxes,key=lambda b:(b.rect.y0,b.rect.x0))
+    prose=[b for b in boxes if b.kind in ('text','section-header','list-item','caption')]
+    if not prose:
+        return sorted(boxes,key=lambda b:(b.rect.y0,b.rect.x0))
+    x = max(range(int(width*.4),int(width*.61)),key=lambda x:
+        min(sum(b.rect.x1 <= x for b in prose),sum(b.rect.x0 >= x for b in prose))
+        - 1.5*sum(b.rect.x0+12 < x < b.rect.x1-12 for b in prose) -.0001*abs(x-width/2))
+    left=[b for b in prose if b.rect.x1 <= x+3]
+    right=[b for b in prose if b.rect.x0 >= x-3]
+    def height(values):
+        return sum(min(b.rect.height,140) for b in values)
+    if not left or not right or min(height(left),height(right))<24:
+        return sorted(boxes,key=lambda b:(b.rect.y0,b.rect.x0))
+    if min(max(b.rect.y1 for b in left),max(b.rect.y1 for b in right)) <= max(min(b.rect.y0 for b in left),min(b.rect.y0 for b in right)):
+        return sorted(boxes,key=lambda b:(b.rect.y0,b.rect.x0))
+    full=[b for b in boxes if b.rect.x0 < x-7 and b.rect.x1 > x+7]
+    pending=[b for b in boxes if b not in full]
+    result=[]
+    def column_sort(group):
+        return sorted(group,key=lambda b:(b.rect.x0 >= x-3,b.rect.y0,b.rect.x0))
+    for divider in sorted(full,key=lambda b:b.rect.y0):
+        band=[b for b in pending if (b.rect.y0+b.rect.y1)/2 < divider.rect.y0]
+        result.extend(column_sort(band))
+        result.append(divider)
+        pending=[b for b in pending if b not in band]
+    return result+column_sort(pending)
+
+def parse_pages(doc, pages, ocr, language):
+    chunks=pymupdf4llm.to_markdown(doc,pages=pages,page_chunks=True, header=False, footer=False,
+        use_ocr=ocr!='off',force_ocr=ocr=='force',ocr_language=language,table_output='html',force_text=False)
+    result={}
+    for number,chunk in zip(pages,chunks,strict=True):
+        result[number]=[]
+        for info in chunk['page_boxes']:
+            kind=info['class']
+            if kind in ('page-header','page-footer','folio'):
+                continue
+            start,end=info['pos']
+            md=chunk['text'][start:end].strip()
+            html,text=clean_html(md) if kind not in VISUAL else ('','')
+            if kind not in VISUAL and not text:
+                continue
+            m=LABEL.match(text)
+            result[number].append(Box(number,kind,pymupdf.Rect(info['bbox']),html,text,key_for(m) if m else ''))
+        # Some title pages have authors and editorial dates aligned as a faux table.
+        for box in result[number]:
+            if number==0 and box.kind=='table' and re.search(r'\breceived\b.*\baccepted\b',box.text,re.I|re.S):
+                cells=BeautifulSoup(box.html,'html.parser').select('td,th')
+                if len(cells)>1:
+                    box.kind='text'
+                    box.html=''.join('<p>'+escape(c.get_text(' ',strip=True))+'</p>' for c in cells if c.get_text(strip=True))
+    return result
+
+def simple_inline(html):
+    return re.sub(r'^<(?:p|h[1-6])>|</(?:p|h[1-6])>$','',html.strip()).strip()
+
+def caption_groups(page_boxes):
+    captions={}
+    for index,boxes in page_boxes.items():
+        for row in boxes:
+            if not row.label or row.used or row.kind in VISUAL:
+                continue
+            before=list(captions.get(row.label,[]))
+            if len(row.text)>90 and re.search(r'^.{0,80}\b(?:demonstrates|shows|illustrates|presents|summarizes)\b',row.text,re.I) and row.kind=='text':
+                continue
+            related=[b for b in boxes if b is not row and not b.label and not b.used and b.kind in ('text','caption')
+                and b.rect.x0 >= row.rect.x1+4 and abs(b.rect.y0-row.rect.y0)<3
+                and min(b.rect.height,row.rect.height)>.5*max(b.rect.height,row.rect.height)]
+            continuation=[]
+            if row.kind=='section-header':
+                continuation=[b for b in boxes if b.kind=='text' and not b.label and not b.used
+                    and abs(b.rect.x0-row.rect.x0)<8 and -1 <= b.rect.y0-row.rect.y1 < 7][:1]
+                if continuation and not related:
+                    base=continuation[0]
+                    related=[b for b in boxes if b.kind=='text' and not b.label and not b.used and b.rect.x0>=base.rect.x1+4
+                        and abs(b.rect.y0-row.rect.y0)<6 and abs(b.rect.y1-base.rect.y1)<15]
+            for box in continuation+related:
+                box.used=True
+            row.used=True
+            if re.search(r'\bsee (?:the )?next page\b',row.text,re.I):
+                if not before:
+                    captions[row.label]=[row]
+            else:
+                if not before or any('see next page' in b.text.lower() for b in before):
+                    captions[row.label]=[row]+continuation+related
+                else:
+                    # Keep repeated caption labels as ordinary blocks when their role is uncertain.
+                    row.used=False
+                    for b in continuation+related:
+                        b.used=False
+    return captions
+
+def distances(caption, visual):
+    pages=visual.page-caption.page
+    if pages:
+        return 190 + abs(pages)*40 + (0 if pages==1 else 15)
+    a,b=caption.rect,visual.rect
+    xgap=max(0,a.x0-b.x1,b.x0-a.x1)
+    ygap=max(0,a.y0-b.y1,b.y0-a.y1)
+    return ygap + 1.3*xgap
+
+def png(doc,page,rect=None,dpi=180):
+    p=doc[page]
+    clip=p.rect if rect is None else pymupdf.Rect(rect.x0-4,rect.y0-3,rect.x1+4,rect.y1+3)&p.rect
+    pix=p.get_pixmap(dpi=dpi,clip=clip,alpha=False)
+    data=base64.b64encode(pix.tobytes('png')).decode('ascii')
+    return f'<img src="data:image/png;base64,{data}" width="{pix.width}" height="{pix.height}" loading="lazy">'
+
+def zoom(image,alt):
+    return (f'<button class="zoom" type="button" aria-label="Enlarge {escape(alt,quote=True)}">'
+        +image.replace('<img ',f'<img alt="{escape(alt,quote=True)}" ',1)+'</button>')
+
+def crop_large_figures(doc, page_boxes):
+    for page, boxes in page_boxes.items():
+        labels=[b for b in boxes if b.label and 'figure' in b.label]
+        if len(labels)!=1:
+            continue
+        label=labels[0]
+        surface=doc[page].rect
+        if label.rect.y0 < .58*surface.height:
+            continue
+        area=pymupdf.Rect(surface.x0,.05*surface.height,surface.x1,label.rect.y0-4)
+        before=[b for b in boxes if b.rect.y1 <= label.rect.y0+1 and b.rect.y0 < area.y1]
+        prose=[b for b in before if b.kind in ('text','list-item','section-header') and len(b.text)>140
+               and len(re.findall(r'[a-z]+',b.text))>=16]
+        if prose or not any(b.kind in ('picture','table') for b in before):
+            continue
+        # Recover the whole plate when a caption identifies a figure-only region.
+        # A layout model may report only some image panels or misclassify plots as tables.
+        for b in before:
+            b.used=True
+        boxes.append(Box(page,'picture',area,'','',label.label))
+
+def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
+    with pymupdf.open(pdf) as doc:
+        if not doc.is_pdf or doc.needs_pass:
+            raise ValueError('Supply an unlocked PDF.')
+        title=(doc.metadata.get('title') or '').strip() or Path(pdf).stem
+        if set(facade)-set(range(1,len(doc)+1)):
+            raise ValueError('A facsimile page number is outside the PDF.')
+        pages=[i for i in range(len(doc)) if i+1 not in facade]
+        boxes=parse_pages(doc,pages,ocr,language) if pages else {}
+        crop_large_figures(doc,boxes)
+        captions=caption_groups(boxes)
+        pictures=[b for group in boxes.values() for b in group if b.kind=='picture' and not b.used]
+        tables=[b for group in boxes.values() for b in group if b.kind=='table' and not b.used]
+        assigned={}
+        for max_distance in (0,1):
+            paired_labels={item[0] for item in assigned.values()}
+            for label,caption in captions.items():
+                if label in paired_labels:
+                    continue
+                options=tables if 'table' in label else pictures
+                candidates=[b for b in options if id(b) not in assigned and b.label==label]
+                if not candidates:
+                    candidates=[b for b in options if id(b) not in assigned and not b.label
+                                and abs(b.page-caption[0].page)==max_distance]
+                if candidates:
+                    found=min(candidates,key=lambda b:distances(caption[0],b))
+                    if found.label or distances(caption[0],found)<270:
+                        assigned[id(found)]=(label,caption)
+        html=[]
+        report={'title':title,'source':str(Path(pdf).resolve()),'pages':[],'unmatched_captions':[]}
+        counts={'picture':0,'formula':0,'table':0}
+        title_norm=lambda s:re.sub(r'\W+','',s.casefold())
+        for group in boxes.values():
+            for b in group:
+                if b.kind=='section-header' and b.page==0 and title_norm(b.text)==title_norm(title):
+                    b.used=True
+        for page in range(len(doc)):
+            number=page+1
+            content=[]
+            html.append(f'<div class="page-anchor" id="page-{number}" aria-label="PDF page {number}"></div>')
+            group=boxes.get(page,[])
+            for b in by_columns([b for b in group if not b.used],doc[page].rect.width):
+                paired=assigned.get(id(b))
+                caption=''
+                identifier=''
+                if paired:
+                    label, cap=paired
+                    identifier='figure-'+re.sub(r'[^a-z0-9]+','-',label)
+                    caption='<figcaption data-pdf-page="'+str(cap[0].page+1)+'">'+' '.join(simple_inline(x.html) for x in cap)+'</figcaption>'
+                if b.kind in VISUAL:
+                    counts[b.kind]+=1
+                    alt=paired[0].title() if paired else f'{b.kind.title()} on PDF page {number}'
+                    tag=f'<figure data-pdf-page="{number}"'+(f' id="{identifier}"' if identifier else '')+'>'
+                    image=png(doc,page,b.rect,dpi=215 if b.kind=='formula' else 180)
+                    content.append(tag+(zoom(image,alt) if b.kind=='picture' else image.replace('<img ',f'<img alt="{escape(alt)}" ',1))+caption+'</figure>')
+                elif b.kind=='table':
+                    counts['table']+=1
+                    content.append(f'<figure class="table-wrap"'+(f' id="{identifier}"' if identifier else '')+'>'+caption+b.html+'</figure>')
+                else:
+                    fragment=b.html
+                    if fragment.startswith('<h1>'):
+                        fragment=fragment.replace('<h1>','<h2>',1).replace('</h1>','</h2>',1)
+                    content.append(fragment)
+            for label, cap in captions.items():
+                if cap[0].page==page and label not in {a[0] for a in assigned.values()}:
+                    report['unmatched_captions'].append({'label':label,'page':number})
+                    content.append('<figure id="figure-'+re.sub(r'[^a-z0-9]+','-',label)+'"><figcaption>'
+                                   +' '.join(simple_inline(x.html) for x in cap)+'</figcaption></figure>')
+            preserved=number in facade or not (content or group)
+            if preserved:
+                content.append(f'<details class="source-page"><summary>Original PDF page {number}</summary>'
+                    +zoom(png(doc,page,dpi=150),f'PDF page {number}')+'</details>')
+            html.extend(content)
+            report['pages'].append({'page':number,'extracted_blocks':len(group),'facsimile':preserved})
+        report['counts']=counts
+        report['paired_captions']=[{'label':label,'caption_page':cap[0].page+1,'asset_page':b.page+1}
+            for b in pictures+tables if (pair:=assigned.get(id(b))) for label,cap in [pair]]
+    out.mkdir(parents=True,exist_ok=True)
+    (out/'article.html').write_text('<header><h1>'+escape(title)+'</h1></header>\n'+'\n'.join(html),encoding='utf-8')
+    (out/'extraction.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return report
