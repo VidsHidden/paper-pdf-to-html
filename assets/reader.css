@@ -2,7 +2,7 @@
   color-scheme: light;
   --ink: #1d2323; --quiet: #5a6665; --accent: #17594f; --line: #dce5e2;
   --bg: #fbfcfb; --wash: #eef4f2; --card: #ffffff;
-  --ow: 15rem; --rw: 22rem; --topbar: 3.1rem; --scale: 1;
+  --ow: 15rem; --rail-w: 22rem; --handle: 0px; --topbar: 3.1rem; --scale: 1;
 }
 * { box-sizing: border-box; }
 html { --scale: 1; font-size: calc(100% * var(--scale)); }
@@ -39,15 +39,27 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 
 /* ---------- shell ---------- */
 .shell {
-  display: grid; grid-template-columns: var(--ow) minmax(0, 1fr) var(--rw);
-  grid-template-areas: "outline main rail";
+  display: grid; grid-template-columns: var(--ow) minmax(0, 1fr) var(--handle) var(--rail-w);
+  grid-template-areas: "outline main handle rail";
   gap: clamp(1.4rem, 2.4vw, 2.6rem);
   max-width: 104rem; margin: 0 auto; padding: 0 clamp(.9rem, 2vw, 2rem) 5rem;
 }
 body[data-outline="closed"] { --ow: 0px; }
-body[data-rail="closed"] { --rw: 0px; }
+body[data-rail="closed"] { --rail-w: 0px; }
 body[data-outline="closed"] #outline,
 body[data-rail="closed"] #rail { display: none; }
+body { --rail-w: var(--user-rail, 22rem); }
+
+.rail-resizer { display: none; grid-area: handle; cursor: col-resize; touch-action: none; }
+.rail-resizer::before {
+  content: ""; display: block; position: sticky; top: 45vh; height: 10vh; width: 3px;
+  margin: 0 auto; border-radius: 2px; background: var(--line); transition: background .15s;
+}
+.rail-resizer:hover::before, body.resizing .rail-resizer::before { background: var(--accent); }
+@media (min-width: 1181px) { body[data-rail="open"] .rail-resizer { display: block; } }
+@media (min-width: 1181px) { body[data-rail="open"] { --handle: 9px; } }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing #rail { pointer-events: none; }
 
 #outline {
   grid-area: outline;
@@ -172,8 +184,8 @@ dialog .close { display: block; margin: .7rem 1rem .7rem auto; padding: .32rem .
 /* ---------- responsive ---------- */
 @media (max-width: 1180px) {
   #rail-toggle { display: none; }
-  body { --rw: 0px; }
-  #rail { display: none; }
+  body { --rail-w: 0px; --handle: 0px; }
+  #rail, .rail-resizer { display: none; }
 }
 @media (max-width: 900px) {
   .shell { display: block; padding-bottom: 3rem; }

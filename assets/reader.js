@@ -31,6 +31,47 @@ for (const button of document.querySelectorAll('[data-step]')) {
   button.addEventListener('click', () => setSize(Number(document.documentElement.dataset.font || 0) + Number(button.dataset.step)));
 }
 
+/* ---------- rail width ---------- */
+const RESIZE_KEY = 'paper-reader-rail-width';
+const resizer = document.getElementById('rail-resizer');
+function railWidth(px, persist) {
+  const width = Math.max(280, Math.min(760, Math.round(px)));
+  body.style.setProperty('--user-rail', width + 'px');
+  if (persist) { try { localStorage.setItem(RESIZE_KEY, String(width)); } catch (error) { /* ignore */ } }
+}
+try {
+  const saved = localStorage.getItem(RESIZE_KEY);
+  if (saved) railWidth(Number(saved), false);
+} catch (error) { /* ignore */ }
+
+if (resizer) {
+  const dragging = () => body.classList.contains('resizing');
+  resizer.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    body.classList.add('resizing');
+    resizer.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  resizer.addEventListener('pointermove', event => {
+    if (dragging()) railWidth(window.innerWidth - event.clientX, false);
+  });
+  const stop = event => {
+    if (!dragging()) return;
+    body.classList.remove('resizing');
+    try { resizer.releasePointerCapture(event.pointerId); } catch (error) { /* ignore */ }
+    const railBox = rail ? rail.getBoundingClientRect().width : 0;
+    railWidth(railBox, true);
+  };
+  resizer.addEventListener('pointerup', stop);
+  resizer.addEventListener('pointercancel', stop);
+  resizer.addEventListener('dblclick', () => railWidth(352, true));
+  resizer.addEventListener('keydown', event => {
+    const current = rail ? rail.getBoundingClientRect().width : 352;
+    if (event.key === 'ArrowLeft') { railWidth(current + 24, true); event.preventDefault(); }
+    if (event.key === 'ArrowRight') { railWidth(current - 24, true); event.preventDefault(); }
+  });
+}
+
 /* ---------- figures move between the rail and their section slot ---------- */
 const wide = matchMedia('(min-width:1180px)');
 const slots = new Map();

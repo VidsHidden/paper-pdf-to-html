@@ -260,12 +260,21 @@ def label_captions(dom):
 PANEL=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
 LEGEND=re.compile(r'^(?:[（(]?图例续下页[)）]?|[(（]?legend continued|see also (?:figure|table|fig\.))',re.I)
 
+LEGEND_TEXT=re.compile(r'\s*\(legend continued on next page\)\s*|\s*（图例续下页）\s*')
+
+def strip_legend(node):
+    for text in list(node.find_all(string=True)):
+        value=str(text)
+        cleaned=LEGEND_TEXT.sub(' ',value)
+        if cleaned!=value:
+            text.replace_with(NavigableString(cleaned))
+
 def gather_captions(dom):
     """Pull the legend paragraphs that trail a figure into that figure."""
     for figure in dom.select('figure'):
         if not figure.select_one('figcaption'):
             continue
-        block=[]
+        panels=[]
         node=figure
         while True:
             node=node.next_sibling
@@ -274,11 +283,64 @@ def gather_captions(dom):
             if isinstance(node,Tag):
                 if re.fullmatch(r'h[1-6]',node.name or '') or node.name in ('figure','table','details'):
                     break
-                block.append(node)
-        panels=[node for node in block if node.name=='p'
-                and (PANEL.match(node.get_text(' ',strip=True)) or LEGEND.match(node.get_text(' ',strip=True)))]
+                text=node.get_text(' ',strip=True) if node.name=='p' else ''
+                if text and (PANEL.match(text) or LEGEND.search(text)):
+                    panels.append(node)
+        # "continued on next page" means the rest of the legend sits after the
+        # page break; keep collecting panel paragraphs until the next plate.
+        if panels and LEGEND.search(panels[-1].get_text(' ',strip=True)):
+            node=panels[-1]
+            while True:
+                node=node.next_sibling
+                if node is None:
+                    break
+                if not isinstance(node,Tag):
+                    continue
+                if node.name in ('figure','table','details'):
+                    break
+                if node.name!='p':
+                    continue
+                text=node.get_text(' ',strip=True)
+                if not PANEL.match(text):
+                    break
+                panels.append(node)
+            # The tail usually sits right above the next plate, after the body text.
+            anchor=None
+            heading=None
+            node=panels[-1]
+            while True:
+                node=node.next_sibling
+                if node is None:
+                    break
+                if not isinstance(node,Tag):
+                    continue
+                if node.name in ('figure','table','details'):
+                    anchor=node
+                    break
+                if heading is None and re.fullmatch(r'h[2-6]',node.name or ''):
+                    heading=node
+            anchor=anchor or heading
+            probe=anchor
+            tail=[]
+            while probe is not None:
+                probe=probe.previous_sibling
+                if probe is None:
+                    break
+                if not isinstance(probe,Tag):
+                    continue
+                if 'page-anchor' in (probe.get('class') or []):
+                    continue
+                if probe.name=='p' and probe not in panels:
+                    text=probe.get_text(' ',strip=True)
+                    if PANEL.match(text) or re.match(r'^[a-z(]',text):
+                        tail.insert(0,probe)
+                        continue
+                break
+            panels.extend(tail)
         if not panels:
             continue
+        for node in panels:
+            strip_legend(node)
         body=dom.new_tag('div',attrs={'class':'caption-body'})
         for node in panels:
             node.extract()
@@ -390,6 +452,7 @@ def render(work,output,translation,mode):
 <div class="shell">
 <nav id="outline" aria-label="Contents">{nav}</nav>
 <main><article>{dom}</article></main>
+<div class="rail-resizer" id="rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整图表栏宽度" tabindex="0"></div>
 <aside id="rail" aria-label="Figures and tables" hidden></aside>
 </div>
 <div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
