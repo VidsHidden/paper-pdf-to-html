@@ -146,7 +146,8 @@ def add_reference_links(dom,numbers):
         sup.extend(BeautifulSoup(content,'html.parser').contents)
 
 REF_TITLES={'references','bibliography','literature cited','参考文献'}
-REF_START=re.compile(r'(?<=[.;])\s+(?=[A-Z][A-Za-zÀ-ÿ\'’\-]+,\s+[A-Z]\.)')
+REF_START=re.compile(r'(?<=[.;])\s*(?=(?:(?:de|van|von|der|den|di|da|la|le|del|dos|du)\s+)?[A-Z][A-Za-zÀ-ÿ\'’\-]+,\s+[A-Z]\.)')
+REF_HAS_YEAR=re.compile(r'\((?:19|20)\d{2}[a-z]?\)')
 REF_YEAR=re.compile(r'\((?:19|20)\d{2}[a-z]?\)')
 REF_SURNAME=re.compile(r'([A-Z][A-Za-zÀ-ÿ\'’\-]+),\s+[A-Z]\.')
 CITE=re.compile(r'([A-Z][A-Za-zÀ-ÿ\'’\-]+(?:\s+(?:et\s+al\.|and\s+[A-Z][A-Za-zÀ-ÿ\'’\-]+|&\s*[A-Z][A-Za-zÀ-ÿ\'’\-]+))?[,，]\s*(?:19|20)\d{2}[a-z]?)')
@@ -176,8 +177,22 @@ def structure_references(dom):
             for item in node.find_all('li',recursive=False):
                 entries.append((None,item.get_text(' ',strip=True)))
         elif node.name in ('p','li'):
+            merged=[]
             for part in REF_START.split(node.get_text(' ',strip=True)):
-                if part.strip():
+                part=part.strip()
+                if not part:
+                    continue
+                # a piece without a year is a title fragment, not a citation
+                if merged and not REF_HAS_YEAR.search(part):
+                    merged[-1]=f'{merged[-1]} {part}'
+                else:
+                    merged.append(part)
+            keep=re.compile(r'^(?:de|van|von|der|den|di|da|la|le|del|dos|du)\s+[A-Z]',re.I)
+            for part in merged:
+                if entries and part[:1].islower() and not keep.match(part):
+                    previous=entries[-1][1]
+                    entries[-1]=(entries[-1][0],f'{previous} {part}')
+                else:
                     entries.append((None,part))
     entries=[(number,re.sub(r'\s+',' ',text).strip()) for number,text in entries if text.strip()]
     if not entries:
@@ -255,7 +270,10 @@ def label_captions(dom):
             continue
         label=dom.new_tag('span',attrs={'class':'caption-label'})
         label.string=match.group().strip()
-        first.replace_with(label, NavigableString(value[match.end():]))
+        rest=value[match.end():]
+        if rest and not rest[0].isspace():
+            rest=' '+rest
+        first.replace_with(label, NavigableString(rest))
 
 PANEL=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
 LEGEND=re.compile(r'^(?:[（(]?图例续下页[)）]?|[(（]?legend continued|see also (?:figure|table|fig\.))',re.I)
