@@ -22,20 +22,16 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
   --preset-rail: 28rem;
   --rail-w: var(--user-rail, var(--preset-rail));
 }
-#size-0:checked ~ .app { --scale: .78; }
-#size-1:checked ~ .app { --scale: .86; }
-#size-2:checked ~ .app { --scale: .94; }
-#size-3:checked ~ .app { --scale: 1; }
-#size-4:checked ~ .app { --scale: 1.1; }
-#size-5:checked ~ .app { --scale: 1.21; }
-#size-6:checked ~ .app { --scale: 1.34; }
+#size-0:checked ~ .app { --scale: .94; }
+#size-1:checked ~ .app { --scale: 1; }
+#size-2:checked ~ .app { --scale: 1.1; }
 #rail-size-0:checked ~ .app { --rail-scale: .85; }
 #rail-size-1:checked ~ .app { --rail-scale: 1; }
 #rail-size-2:checked ~ .app { --rail-scale: 1.2; }
 #rail-size-3:checked ~ .app { --rail-scale: 1.45; }
 #rail-w-0:checked ~ .app { --preset-rail: 22rem; }
 #rail-w-1:checked ~ .app { --preset-rail: 28rem; }
-#rail-w-2:checked ~ .app { --preset-rail: 34rem; }
+#rail-w-2:checked ~ .app { --preset-rail: 44rem; }
 #outline-switch:not(:checked) ~ .app { --ow: 0px; }
 #outline-switch:not(:checked) ~ .app #outline { display: none; }
 #rail-switch:not(:checked) ~ .app { --rail-w: 0px; --handle: 0px; }
@@ -82,20 +78,12 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
   cursor: pointer; line-height: 1; user-select: none;
 }
 .sz:hover { background: var(--wash); color: var(--accent); }
-.sz-0 { font-size: .6rem; }
-.sz-1 { font-size: .68rem; }
-.sz-2 { font-size: .76rem; }
-.sz-3 { font-size: .86rem; }
-.sz-4 { font-size: .96rem; }
-.sz-5 { font-size: 1.06rem; }
-.sz-6 { font-size: 1.16rem; }
+.sz-0 { font-size: .74rem; }
+.sz-1 { font-size: .84rem; }
+.sz-2 { font-size: .95rem; }
 #size-0:checked ~ .app .sz-0,
 #size-1:checked ~ .app .sz-1,
-#size-2:checked ~ .app .sz-2,
-#size-3:checked ~ .app .sz-3,
-#size-4:checked ~ .app .sz-4,
-#size-5:checked ~ .app .sz-5,
-#size-6:checked ~ .app .sz-6 { color: var(--accent); font-weight: 800; }
+#size-2:checked ~ .app .sz-2 { color: var(--accent); font-weight: 800; }
 
 /* ---------- shell ---------- */
 .shell {

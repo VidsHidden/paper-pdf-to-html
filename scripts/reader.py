@@ -451,12 +451,8 @@ def render(work,output,translation,mode):
 <input class="switch" type="checkbox" id="outline-switch" checked>
 <input class="switch" type="checkbox" id="rail-switch" checked>
 <input class="switch" type="radio" name="reading-size" id="size-0">
-<input class="switch" type="radio" name="reading-size" id="size-1">
+<input class="switch" type="radio" name="reading-size" id="size-1" checked>
 <input class="switch" type="radio" name="reading-size" id="size-2">
-<input class="switch" type="radio" name="reading-size" id="size-3" checked>
-<input class="switch" type="radio" name="reading-size" id="size-4">
-<input class="switch" type="radio" name="reading-size" id="size-5">
-<input class="switch" type="radio" name="reading-size" id="size-6">
 <input class="switch" type="radio" name="rail-width" id="rail-w-0">
 <input class="switch" type="radio" name="rail-width" id="rail-w-1" checked>
 <input class="switch" type="radio" name="rail-width" id="rail-w-2">
@@ -469,13 +465,9 @@ def render(work,output,translation,mode):
 <label class="ctrl" for="outline-switch" title="收起或展开目录"><span aria-hidden="true">☰</span> 目录</label>
 <span class="grow"></span>
 <div class="fontctl" role="group" aria-label="字号">
-<label class="sz sz-0" for="size-0" title="最小字号">A</label>
-<label class="sz sz-1" for="size-1" title="很小字号">A</label>
-<label class="sz sz-2" for="size-2" title="较小字号">A</label>
-<label class="sz sz-3" for="size-3" title="标准字号">A</label>
-<label class="sz sz-4" for="size-4" title="稍大字号">A</label>
-<label class="sz sz-5" for="size-5" title="大字号">A</label>
-<label class="sz sz-6" for="size-6" title="最大字号">A</label>
+<label class="sz sz-0" for="size-0" title="小字号">A</label>
+<label class="sz sz-1" for="size-1" title="标准字号">A</label>
+<label class="sz sz-2" for="size-2" title="大字号">A</label>
 </div>
 <div class="widthctl" role="group" aria-label="图表栏宽度">
 <label class="w w-0" for="rail-w-0" title="窄">窄</label>
