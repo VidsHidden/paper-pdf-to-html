@@ -22,6 +22,15 @@ description: Convert an uploaded or local academic PDF into a single offline HTM
 
 目录折叠、图表栏开关和五档字号用原生 checkbox/radio 加 CSS 实现，不依赖脚本，在 Zotero 阅读器这类禁用 JavaScript 的环境里同样可用。脚本只负责：记住字号与栏宽、拖拽调宽、点击引用弹浮层、图表在窄屏回到小节末尾。
 
+## AI 校订（必做）
+
+脚本只做规则能定的部分（行内断行归并、栏末折断段落合并、伪表格还原、投稿信息上提）。断词、错配、术语这类要判断的，必须由模型过一遍：
+
+1. `uv run <skill>/scripts/reader.py review OUTPUT.html`，把可疑文字单元写到 `OUTPUT.review.json`。每项含 `reasons`：`no-terminal`（段落没收尾）、`repeat`（相邻重复）、`digit`（疑似页码）、`long-word`（疑似连写）、`short`、`double-space`。
+2. 对照 PDF 逐条判断，**能确定怎么改才写补丁**，不确定就保留原样并在汇报里说明。
+3. 把修改写成 `patch.json`：`[{"find": "原文片段", "replace": "改后片段"}]`，然后 `reader.py apply --work WORKDIR patch.json`，改动会追加进 `WORKDIR/polish.json`。
+4. 重新 `render`：渲染末尾会自动套用 `polish.json`，因此补丁可重复生效，也留下可审计的改动记录。
+
 ## 检查成品
 
 1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。`caption_audit` 列出每条图注的字数和是否以句末标点收尾；`clean_end` 为 false 的说明图注被分页截断，先看能不能补齐，补不上就对该页用 `--facsimile`。`caption_strategy` 为 `labels-only` 表示扫描件没有字号信息，图注只能按图号锚定。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。

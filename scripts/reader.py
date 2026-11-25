@@ -7,6 +7,7 @@
 # ///
 """Build a portable English or English/Simplified Chinese paper reader."""
 import argparse
+import json
 from hashlib import sha256
 from html import escape
 from pathlib import Path
@@ -419,6 +420,98 @@ def flatten_fake_tables(dom):
             paragraph.append(child.extract())
         figure.replace_with(paragraph)
 
+def join_broken_paragraphs(dom):
+    """Re-join paragraphs a column break cut in half."""
+    terminal=re.compile(r'[.!?。！？:：；;）)\]]$')
+    for paragraph in list(dom.select('p')):
+        if is_meta_block(paragraph):
+            continue
+        following=paragraph.find_next_sibling('p')
+        while following is not None:
+            head=paragraph.get_text(' ',strip=True)
+            tail=following.get_text(' ',strip=True)
+            if terminal.search(head) or not tail or not tail[0].islower():
+                break
+            paragraph.append(NavigableString(' '))
+            for child in list(following.contents):
+                paragraph.append(child.extract())
+            following.decompose()
+            following=paragraph.find_next_sibling('p')
+
+def normalize_breaks(dom):
+    """Replace soft line breaks inside prose.
+
+    Table cells and narrow columns arrive with a <br> per source line. Join a
+    break with no space when it clearly split a word, otherwise turn it into
+    a space.
+    """
+    for br in dom.select('br'):
+        before=br.previous_sibling
+        after=br.next_sibling
+        prev_text=str(before)[-1:] if isinstance(before,NavigableString) else ''
+        next_text=str(after)[:1] if isinstance(after,NavigableString) else ''
+        glue = prev_text in '-–—' and next_text.islower()
+        br.replace_with(NavigableString('' if glue else ' '))
+
+REVIEW_REASONS={
+    'short':'very short paragraph',
+    'double-space':'double spaces in text',
+    'no-terminal':'paragraph does not end with punctuation',
+    'repeat':'identical neighbouring paragraphs',
+    'digit':'standalone number, likely a page number',
+    'long-word':'unusually long token, possibly glued words',
+}
+
+def review_html(html):
+    return review_units(BeautifulSoup(html,'html.parser'))
+
+def review_units(dom):
+    """Collect text units a human or model should look at."""
+    items=[]
+    blocks=[node for node in dom.select('p, li, figcaption') if node.get_text(strip=True)]
+    previous=''
+    for index,node in enumerate(blocks):
+        text=re.sub(r'\s+',' ',node.get_text(' ',strip=True))
+        reasons=[]
+        meta=bool(META_START.match(text)) or bool(re.match(r'^\d\s*[A-Z]',text)) or text.count(',')>=6
+        if meta:
+            previous=text
+            continue
+        if len(text)<45 and node.name=='p':
+            reasons.append('short')
+        if '  ' in node.get_text():
+            reasons.append('double-space')
+        if node.name=='p' and len(text)>250 and not re.search(r'[.!?。！？:：；;]$',text):
+            reasons.append('no-terminal')
+        if text==previous:
+            reasons.append('repeat')
+        if re.fullmatch(r'\d{1,4}',text):
+            reasons.append('digit')
+        if any(len(token)>40 and not re.search(r'\d',token) for token in text.split()):
+            reasons.append('long-word')
+        if reasons:
+            items.append({'index':index,'reasons':reasons,'text':text[:400]})
+        previous=text
+    return items
+
+def load_polish(work):
+    path=work/'polish.json'
+    if not path.is_file():
+        return []
+    fixes=json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(fixes,list):
+        raise ValueError('polish.json must hold a list of {find, replace} objects.')
+    return fixes
+
+def apply_patch(work,patch_path):
+    fixes=json.loads(patch_path.read_text(encoding='utf-8'))
+    if not isinstance(fixes,list):
+        raise ValueError('The patch file must hold a list of {find, replace} objects.')
+    target=work/'polish.json'
+    merged=load_polish(work)+[entry for entry in fixes if entry.get('find')]
+    target.write_text(json.dumps(merged,ensure_ascii=False,indent=2),encoding='utf-8')
+    print(f'{len(merged)} fixes recorded in {target}')
+
 def place_figures(dom):
     """Leave a slot at the section that first mentions each plate; return the plates."""
     article=dom.select_one('article') or dom
@@ -488,6 +581,8 @@ def render(work,output,translation,mode):
         text=node.get_text(' ',strip=True)
         if re.search(r'https?://|[\w.+-]+@[\w-]+\.[\w.]+',text):
             node['class']=(node.get('class') or [])+['plain']
+    join_broken_paragraphs(dom)
+    normalize_breaks(dom)
     hoist_front_matter(dom)
     flatten_fake_tables(dom)
     label_captions(dom)
@@ -560,6 +655,10 @@ def render(work,output,translation,mode):
 <div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
 <dialog aria-label="Enlarged figure"><button class="close" type="button">Close ×</button><div class="enlarged"></div></dialog>
 <script>{js}</script></body></html>'''
+    for entry in load_polish(work):
+        find=entry.get('find')
+        if find and find in result:
+            result=result.replace(find,entry.get('replace',''),1)
     verify(result)
     output.parent.mkdir(parents=True,exist_ok=True)
     pending=output.with_suffix(output.suffix+'.tmp')
@@ -618,12 +717,26 @@ def cli():
     build.add_argument('output',type=Path)
     build.add_argument('--mode',choices=['en','zh','both'],default='both')
     build.add_argument('--translations',type=Path)
+    rev=commands.add_parser('review',help='List text units worth a human or model pass')
+    rev.add_argument('html',type=Path)
+    rev.add_argument('--out',type=Path)
+    app=commands.add_parser('apply',help='Apply a JSON list of find/replace fixes')
+    app.add_argument('--work',type=Path,required=True)
+    app.add_argument('patch',type=Path)
     commands.add_parser('models')
     commands.add_parser('deepseek-setup',help='Save a DeepSeek key using a masked Mac prompt')
     test=commands.add_parser('verify')
     test.add_argument('html',type=Path)
     args=parser.parse_args()
-    if args.command=='models':
+    if args.command=='review':
+        items=review_html(args.html.read_text(encoding='utf-8'))
+        out=args.out or args.html.with_suffix('.review.json')
+        out.write_text(json.dumps(items,ensure_ascii=False,indent=2),encoding='utf-8')
+        print(f'{len(items)} units need review -> {out}')
+    elif args.command=='apply':
+        apply_patch(args.work,args.patch)
+        print(f'patched {args.work/"article.html"}')
+    elif args.command=='models':
         prepare_models(cache_path(),chrome_path())
     elif args.command=='deepseek-setup':
         from deepseek_keychain import setup_key
