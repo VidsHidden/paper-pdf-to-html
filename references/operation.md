@@ -28,6 +28,8 @@ uv run <skill>/scripts/reader.py convert INPUT.pdf OUTPUT.html --work WORKDIR --
 
 API 模式将标题、摘要、待译文本及术语表发送给配置的服务。原 PDF、内嵌图片和占位符背后的 HTML 数据留在本机。API 返回临时错误时会有限重试，译文漏段或丢失占位符时会拆小批次重试。失败时会保留已通过校验的批次。需要保持全文本地处理时用 `--translator local`。
 
+研究论文要求用大模型翻译时，按用户选定的模型运行。遇到连通、凭据或配额错误时，从原工作目录恢复，并保留已通过占位符校验的批次。交付前至少对照校订标题、摘要和抽样图注，留意空间方位、样本分组、数值单位及作者限定语。把校订保存在译文 JSON 中，并用该文件离线重建 HTML。双语验收同时检查三种语言视图和窄屏长网址换行。
+
 ## 分步校订
 
 1. `reader.py prepare INPUT.pdf --work WORKDIR` 生成 `article.html`、`extraction.json` 和 `translation-input.json`。
