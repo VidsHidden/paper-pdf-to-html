@@ -24,18 +24,30 @@ for (const input of sizeInputs) {
   });
 }
 
-/* ---------- rail width ---------- */
+/* ---------- rail width: presets stay in CSS, dragging is an extra ---------- */
 const RESIZE_KEY = 'paper-reader-rail-width';
 const resizer = document.getElementById('rail-resizer');
-function railWidth(px, persist) {
-  const width = Math.max(280, Math.min(760, Math.round(px)));
-  body.style.setProperty('--user-rail', width + 'px');
-  if (persist) { try { localStorage.setItem(RESIZE_KEY, String(width)); } catch (error) { /* ignore */ } }
+const widthInputs = [...document.querySelectorAll('input[name="rail-width"]')];
+function setDraggedWidth(px, persist) {
+  const width = Math.max(260, Math.min(760, Math.round(px)));
+  app.style.setProperty('--user-rail', width + 'px');
+  if (persist) { try { localStorage.setItem(RESIZE_KEY, 'px:' + width); } catch (error) { /* ignore */ } }
 }
 try {
   const saved = localStorage.getItem(RESIZE_KEY);
-  if (saved) railWidth(Number(saved), false);
+  if (saved && saved.startsWith('px:')) setDraggedWidth(Number(saved.slice(3)), false);
+  else if (saved && saved.startsWith('preset:')) {
+    const input = document.getElementById('rail-w-' + saved.slice(7));
+    if (input) input.checked = true;
+  }
 } catch (error) { /* ignore */ }
+for (const input of widthInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    app.style.removeProperty('--user-rail');
+    try { localStorage.setItem(RESIZE_KEY, 'preset:' + input.id.replace('rail-w-', '')); } catch (error) { /* ignore */ }
+  });
+}
 
 if (resizer) {
   const dragging = () => body.classList.contains('resizing');
@@ -46,22 +58,25 @@ if (resizer) {
     event.preventDefault();
   });
   resizer.addEventListener('pointermove', event => {
-    if (dragging()) railWidth(window.innerWidth - event.clientX, false);
+    if (dragging()) setDraggedWidth(window.innerWidth - event.clientX, false);
   });
   const stop = event => {
     if (!dragging()) return;
     body.classList.remove('resizing');
     try { resizer.releasePointerCapture(event.pointerId); } catch (error) { /* ignore */ }
     const box = rail ? rail.getBoundingClientRect().width : 0;
-    railWidth(box, true);
+    setDraggedWidth(box, true);
   };
   resizer.addEventListener('pointerup', stop);
   resizer.addEventListener('pointercancel', stop);
-  resizer.addEventListener('dblclick', () => railWidth(352, true));
+  resizer.addEventListener('dblclick', () => {
+    app.style.removeProperty('--user-rail');
+    try { localStorage.removeItem(RESIZE_KEY); } catch (error) { /* ignore */ }
+  });
   resizer.addEventListener('keydown', event => {
     const current = rail ? rail.getBoundingClientRect().width : 352;
-    if (event.key === 'ArrowLeft') { railWidth(current + 24, true); event.preventDefault(); }
-    if (event.key === 'ArrowRight') { railWidth(current - 24, true); event.preventDefault(); }
+    if (event.key === 'ArrowLeft') { setDraggedWidth(current + 24, true); event.preventDefault(); }
+    if (event.key === 'ArrowRight') { setDraggedWidth(current - 24, true); event.preventDefault(); }
   });
 }
 
