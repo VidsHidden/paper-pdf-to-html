@@ -107,8 +107,11 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 
 #outline {
   grid-area: outline; padding: 1.4rem clamp(1.1rem, 1.8vw, 2rem) 2rem 0;
-  position: sticky; top: var(--topbar); height: calc(100vh - var(--topbar));
-  overflow-y: auto; overscroll-behavior: contain; font: .84rem/1.4 system-ui, sans-serif;
+  position: sticky; top: var(--topbar); align-self: start;
+  height: auto; max-height: calc(100vh - var(--topbar));
+  overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: #c3d3ce transparent;
+  font: .84rem/1.4 system-ui, sans-serif;
 }
 .brand { display: block; margin: 0 0 .55rem; padding: 0 .55rem; color: var(--ink); font-weight: 750; text-decoration: none; }
 .nav-links { display: grid; border-left: 1px solid var(--line); }
@@ -188,10 +191,15 @@ a.figref { color: var(--accent); font-weight: 600; }
 
 /* ---------- rail ---------- */
 #rail {
-  grid-area: rail; position: sticky; top: var(--topbar); height: calc(100vh - var(--topbar));
+  grid-area: rail; position: sticky; top: var(--topbar);
+  align-self: start; height: auto; max-height: calc(100vh - var(--topbar));
   overflow-y: auto; overscroll-behavior: contain;
-  padding: 0 0 3rem clamp(.9rem, 1.4vw, 1.6rem);
+  scrollbar-width: thin; scrollbar-color: #c3d3ce transparent;
+  padding: 0 0 2rem clamp(.9rem, 1.4vw, 1.6rem);
   font-size: calc(.95rem * var(--rail-scale));
+}
+body.no-js #rail {
+  position: static; max-height: none; overflow: visible;
 }
 #rail:empty { display: none; }
 .rail-head {
