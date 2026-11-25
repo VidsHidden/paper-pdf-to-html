@@ -101,6 +101,8 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
   scrollbar-width: thin; scrollbar-color: #c3d3ce transparent;
   font: .84rem/1.4 system-ui, sans-serif;
 }
+#outline::-webkit-scrollbar { width: 8px; }
+#outline::-webkit-scrollbar-thumb { background: #cddcd7; border-radius: 4px; }
 .brand { display: block; margin: 0 0 .55rem; padding: 0 .55rem; color: var(--ink); font-weight: 750; text-decoration: none; }
 .nav-links { display: grid; border-left: 1px solid var(--line); }
 .nav-links a { display: block; padding: .44rem .6rem; color: var(--quiet); text-decoration: none; }
@@ -182,13 +184,21 @@ a.figref { color: var(--accent); font-weight: 600; }
   grid-area: rail; position: sticky; top: var(--topbar);
   align-self: start; height: auto; max-height: calc(100vh - var(--topbar));
   overflow-y: auto; overscroll-behavior: contain;
-  scrollbar-width: thin; scrollbar-color: #c3d3ce transparent;
+  scrollbar-width: thin; scrollbar-color: #9fb5ae #eef4f2;
+  scrollbar-gutter: stable;
   padding: 0 0 2rem clamp(.9rem, 1.4vw, 1.6rem);
   font-size: calc(.95rem * var(--rail-scale));
 }
-body.no-js #rail {
-  position: static; max-height: none; overflow: visible;
+/* a soft fade at the scrollport edge hints that more plates follow */
+#rail::after {
+  content: ""; position: sticky; bottom: -.4rem; display: block;
+  height: 2.4rem; margin-top: -2.4rem; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(251, 252, 251, 0), var(--bg) 72%);
 }
+#rail::-webkit-scrollbar { width: 11px; }
+#rail::-webkit-scrollbar-track { background: var(--wash); border-radius: 6px; }
+#rail::-webkit-scrollbar-thumb { background: #9fb5ae; border-radius: 6px; border: 3px solid var(--wash); }
+#rail::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 #rail:empty { display: none; }
 .rail-head {
   position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: .5rem;
