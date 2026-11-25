@@ -365,6 +365,60 @@ def gather_captions(dom):
             body.append(node)
         figure.append(body)
 
+META_START=re.compile(r'^(?:Correspondence|Received|Accepted|Published|These authors|Keywords?|Electronic supplementary|[©(])',re.I)
+
+def is_meta_block(block):
+    text=block.get_text(' ',strip=True)
+    if not text:
+        return False
+    if block.name=='blockquote' and re.match(r'^\d\s*[A-Z]',text):
+        return True
+    return bool(META_START.match(text))
+
+def hoist_front_matter(dom):
+    """Move affiliation and submission blocks above the running text."""
+    article=dom.select_one('article') or dom
+    blocks=[child for child in article.children if isinstance(child,Tag)]
+    metas=[block for block in blocks[:40] if is_meta_block(block)]
+    if not metas:
+        return
+    anchor=None
+    for index,block in enumerate(blocks):
+        if block.name in ('h1','h2') and block not in metas:
+            for follower in blocks[index+1:index+4]:
+                if follower.name=='p' and follower not in metas:
+                    anchor=follower
+            break
+    if anchor is None:
+        return
+    for block in metas:
+        block.extract()
+    for block in reversed(metas):
+        anchor.insert_after(block)
+
+def flatten_fake_tables(dom):
+    """Turn one-cell boxes full of prose back into paragraphs.
+
+    A layout model sometimes reports a text panel (the abstract, an author
+    box) as a table, which then renders in a monospaced grid.
+    """
+    for figure in dom.select('figure'):
+        table=figure.select_one('table')
+        if table is None:
+            continue
+        cells=[(cell,cell.get_text(' ',strip=True)) for cell in table.select('td,th')]
+        cells=[(cell,text) for cell,text in cells if text]
+        if not cells:
+            continue
+        total=sum(len(text) for _,text in cells)
+        cell,text=max(cells,key=lambda item:len(item[1]))
+        if len(text)<200 or len(text)<total*.7:
+            continue
+        paragraph=dom.new_tag('p')
+        for child in list(cell.contents):
+            paragraph.append(child.extract())
+        figure.replace_with(paragraph)
+
 def place_figures(dom):
     """Leave a slot at the section that first mentions each plate; return the plates."""
     article=dom.select_one('article') or dom
@@ -434,6 +488,8 @@ def render(work,output,translation,mode):
         text=node.get_text(' ',strip=True)
         if re.search(r'https?://|[\w.+-]+@[\w-]+\.[\w.]+',text):
             node['class']=(node.get('class') or [])+['plain']
+    hoist_front_matter(dom)
+    flatten_fake_tables(dom)
     label_captions(dom)
     gather_captions(dom)
     plates=place_figures(dom)
