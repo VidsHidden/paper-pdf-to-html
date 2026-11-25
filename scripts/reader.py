@@ -497,7 +497,7 @@ def review_units(dom):
             reasons.append('short')
         if '  ' in node.get_text():
             reasons.append('double-space')
-        if node.name=='p' and len(text)>250 and not re.search(r'[.!?。！？:：；;]$',text):
+        if node.name=="p" and len(text)>120 and not re.search(r'[.!?。！？:：；;]$',text):
             reasons.append('no-terminal')
         if text==previous:
             reasons.append('repeat')
