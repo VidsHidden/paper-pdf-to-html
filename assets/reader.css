@@ -102,7 +102,7 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 #outline {
   grid-area: outline; padding: 1.4rem clamp(1.1rem, 1.8vw, 2rem) 2rem 0;
   position: sticky; top: var(--topbar); align-self: start;
-  height: auto; max-height: calc(100vh - var(--topbar));
+  height: calc(100vh - var(--topbar));
   overflow-y: auto; overscroll-behavior: contain;
   scrollbar-width: thin; scrollbar-color: #c3d3ce transparent;
   font: .84rem/1.4 system-ui, sans-serif;
@@ -193,8 +193,7 @@ a.figref { color: var(--accent); font-weight: 600; }
 /* ---------- rail ---------- */
 #rail {
   grid-area: rail; position: sticky; top: var(--topbar);
-  align-self: start; height: auto;
-  max-height: calc(100vh - var(--topbar));
+  align-self: start; height: calc(100vh - var(--topbar));
   overflow-y: scroll; overscroll-behavior: contain;
   scrollbar-width: auto; scrollbar-color: #8fa8a1 #e6eeeb;
   scrollbar-gutter: stable;
