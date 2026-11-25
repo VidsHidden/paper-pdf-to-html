@@ -181,6 +181,9 @@ def caption_groups(page_boxes):
                         b.used=False
     return captions
 
+PANEL_LIKE=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
+TERMINAL=re.compile(r'[.!?。！？]\s*$')
+HEADING_LIKE=re.compile(r'^(?:[A-Z][A-Z0-9 ,.&/–-]{3,}|(?:RESULTS|DISCUSSION|METHODS|CONCLUSION)\b)')
 LEGEND_MARK=re.compile(r'\(legend continued on next page\)|（图例续下页）|\(continued on next page\)|\(continued\)',re.I)
 TERMINAL=re.compile(r'[.!?。！？]\s*$')
 
@@ -199,6 +202,8 @@ def attach_legend(captions, page_boxes, body):
                 continue
             for follower in boxes[index+1:]:
                 if follower.used or follower.label or follower.kind in VISUAL or follower.kind=='table':
+                    break
+                if follower.kind=='section-header' or HEADING_LIKE.match(follower.text.strip()):
                     break
                 if not follower.size or follower.size>body-.25:
                     break
