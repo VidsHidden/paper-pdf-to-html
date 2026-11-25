@@ -204,6 +204,10 @@ a.figref { color: var(--accent); font-weight: 600; }
 #rail::-webkit-scrollbar-track { background: var(--wash); border-radius: 6px; }
 #rail::-webkit-scrollbar-thumb { background: #9fb5ae; border-radius: 6px; border: 3px solid var(--wash); }
 #rail::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+/* embedded readers may scale the page down, which makes 100vh shorter than
+   the pane; oversized by a few percent it still fills, at the cost of a
+   little slop at the very bottom of the scroll area */
+body.no-js #rail { height: calc((100vh - var(--topbar)) * 1.2); }
 #rail:empty { display: none; }
 .rail-head {
   position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: .5rem;
