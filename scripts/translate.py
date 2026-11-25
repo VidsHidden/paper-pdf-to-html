@@ -62,10 +62,13 @@ def translate(rows, output, prepare=None):
         page.goto(placeholder.as_uri())
         page.evaluate("""async () => {
             const options = {sourceLanguage:'en',targetLanguage:'zh'};
-            if (typeof Translator === 'undefined' || await Translator.availability(options) !== 'available') {
-                throw new Error('Google Chrome could not load the local en/zh translation models');
-            }
-            window.engine = await Promise.race([Translator.create(options),new Promise((_, reject) =>
+            const startup = async () => {
+                if (typeof Translator === 'undefined' || await Translator.availability(options) !== 'available') {
+                    throw new Error('Google Chrome could not load the local en/zh translation models');
+                }
+                return Translator.create(options);
+            };
+            window.engine = await Promise.race([startup(),new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Local Translator startup timed out')),20_000))]);
         }""")
         for index,row in enumerate(rows,1):

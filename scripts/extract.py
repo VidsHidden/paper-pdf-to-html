@@ -1,6 +1,7 @@
 """Extract ordered reading blocks and clipped visuals from an academic PDF."""
 from dataclasses import dataclass
 from html import escape
+from hashlib import file_digest
 from pathlib import Path
 import base64
 import json
@@ -16,6 +17,7 @@ MD = MarkdownIt('commonmark', {'html': True}).enable('table')
 ALLOWED = set('a p strong em b i sup sub s del u mark br h1 h2 h3 h4 h5 h6 ul ol li blockquote pre code table thead tbody tfoot tr th td hr'.split())
 VISUAL = {'picture', 'formula'}
 LABEL = re.compile(r'^(?:(extended\s+data|supplementary|supporting)\s+)?(fig(?:ure)?\.?|table)\s*([A-Z]?\d+[A-Z]?)(?=\s*(?:[.｜|:]|$)|\s)', re.I)
+NEXT_PAGE = re.compile(r'\bsee (?:the )?next page\b', re.I)
 
 @dataclass
 class Box:
@@ -82,21 +84,22 @@ def by_columns(boxes, width):
         pending=[b for b in pending if b not in band]
     return result+column_sort(pending)
 
-def block_font_size(page, rect):
+def page_spans(page):
+    flags = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES
+    return [(pymupdf.Rect(span['bbox']), round(span['size'], 1))
+            for block in page.get_text('dict', flags=flags)['blocks'] if block['type'] == 0
+            for line in block['lines'] for span in line['spans']]
+
+
+def block_font_size(spans, rect):
     """Median text size of the spans that fill this block."""
     sizes=[]
-    for block in page.get_text('dict')['blocks']:
-        if block.get('type')!=0:
+    for box, size in spans:
+        if box.is_empty:
             continue
-        for line in block['lines']:
-            for span in line['spans']:
-                box=pymupdf.Rect(span['bbox'])
-                if box.is_empty:
-                    continue
-                overlap=box&rect
-                if overlap.is_empty or overlap.get_area()<.4*box.get_area():
-                    continue
-                sizes.append(round(span['size'],1))
+        overlap=box&rect
+        if not overlap.is_empty and overlap.get_area() >= .4*box.get_area():
+            sizes.append(size)
     return statistics.median(sizes) if sizes else 0.0
 
 def body_font_size(page_boxes):
@@ -114,6 +117,7 @@ def parse_pages(doc, pages, ocr, language):
     result={}
     for number,chunk in zip(pages,chunks,strict=True):
         result[number]=[]
+        spans=page_spans(doc[number])
         for info in chunk['page_boxes']:
             kind=info['class']
             if kind in ('page-header','page-footer','folio'):
@@ -125,8 +129,10 @@ def parse_pages(doc, pages, ocr, language):
                 continue
             m=LABEL.match(text)
             rect=pymupdf.Rect(info['bbox'])
+            if kind=='section-header' and rect.y0<.14*doc[number].rect.height and text.casefold() in ('article','nature methods'):
+                continue
             result[number].append(Box(number,kind,rect,html,text,key_for(m) if m else '',
-                                      False,block_font_size(doc[number],rect)))
+                                      False,block_font_size(spans,rect)))
         # Some title pages have authors and editorial dates aligned as a faux table.
         for box in result[number]:
             if number==0 and box.kind=='table' and re.search(r'\breceived\b.*\baccepted\b',box.text,re.I|re.S):
@@ -168,11 +174,11 @@ def caption_groups(page_boxes):
             for box in continuation+related:
                 box.used=True
             row.used=True
-            if re.search(r'\bsee (?:the )?next page\b',row.text,re.I):
+            if NEXT_PAGE.search(row.text):
                 if not before:
                     captions[row.label]=[row]
             else:
-                if not before or any('see next page' in b.text.lower() for b in before):
+                if not before or any(NEXT_PAGE.search(b.text) for b in before):
                     captions[row.label]=[row]+continuation+related
                 else:
                     # Keep repeated caption labels as ordinary blocks when their role is uncertain.
@@ -182,7 +188,6 @@ def caption_groups(page_boxes):
     return captions
 
 PANEL_LIKE=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
-TERMINAL=re.compile(r'[.!?。！？]\s*$')
 HEADING_LIKE=re.compile(r'^(?:[A-Z][A-Z0-9 ,.&/–-]{3,}|(?:RESULTS|DISCUSSION|METHODS|CONCLUSION)\b)')
 LEGEND_MARK=re.compile(r'\(legend continued on next page\)|（图例续下页）|\(continued on next page\)|\(continued\)',re.I)
 TERMINAL=re.compile(r'[.!?。！？]\s*$')
@@ -287,12 +292,23 @@ def ink_area(page, area):
 def crop_large_figures(doc, page_boxes):
     for page, boxes in page_boxes.items():
         labels=[b for b in boxes if b.label and 'figure' in b.label]
+        if not labels:
+            # Some layouts report the printed next-page marker as an image.
+            for x0,y0,x1,y1,line,*_ in doc[page].get_text('blocks', flags=pymupdf.TEXTFLAGS_BLOCKS & ~pymupdf.TEXT_PRESERVE_IMAGES):
+                match=LABEL.match(line.strip())
+                if match and NEXT_PAGE.search(line):
+                    labels.append(Box(page,'caption',pymupdf.Rect(x0,y0,x1,y1),'',line,key_for(match)))
         if len(labels)!=1:
             continue
         label=labels[0]
         surface=doc[page].rect
         caption_column=[]
-        if label.rect.y0 >= .58*surface.height:
+        above=[b for b in boxes if b.rect.y1<=label.rect.y0+2]
+        panels=[b for b in above if b.kind=='picture']
+        prose_above=any(b.kind in ('text','section-header','list-item') and len(b.text)>140 for b in above)
+        if len(panels)>=2 and not prose_above:
+            area=pymupdf.Rect(surface.x0,min(b.rect.y0 for b in panels)-6,surface.x1,label.rect.y0-4)
+        elif label.rect.y0 >= .58*surface.height:
             area=pymupdf.Rect(surface.x0,.05*surface.height,surface.x1,label.rect.y0-4)
         else:
             # A caption at the top of the page still anchors a plate that fills the page.
@@ -318,20 +334,40 @@ def crop_large_figures(doc, page_boxes):
             continue
         # Recover the whole plate when a caption identifies a figure-only region.
         # A layout model may report only some image panels or misclassify plots as tables.
+        cap_below=area.y1<label.rect.y0
         area=ink_area(doc[page],area)
+        if cap_below:
+            area.y1=min(area.y1,label.rect.y0-4)
         for b in before:
-            if id(b) not in skip:
+            if id(b) not in skip and (b.kind in ('picture','table') or b.rect.intersects(area)):
                 b.used=True
         boxes.append(Box(page,'picture',area,'','',label.label))
 
 def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
+    with Path(pdf).open('rb') as source:
+        digest=file_digest(source,'sha256').hexdigest()
+    previous=out/'extraction.json'
+    if previous.is_file():
+        old=json.loads(previous.read_text(encoding='utf-8'))
+        if old.get('source_sha256',digest)!=digest:
+            raise ValueError('This work directory belongs to a different PDF. Choose a new --work directory.')
     with pymupdf.open(pdf) as doc:
         if not doc.is_pdf or doc.needs_pass:
             raise ValueError('Supply an unlocked PDF.')
         title=(doc.metadata.get('title') or '').strip() or Path(pdf).stem
         if set(facade)-set(range(1,len(doc)+1)):
             raise ValueError('A facsimile page number is outside the PDF.')
-        pages=[i for i in range(len(doc)) if i+1 not in facade]
+        image_tail=set()
+        if ocr!='force':
+            # Trailing publisher forms are often full-page bitmaps. Cropping
+            # their largest detected graphic can omit checkboxes and fields.
+            for page in reversed(doc):
+                if page.get_text().strip():
+                    break
+                image_tail.add(page.number+1)
+            if image_tail and len(image_tail)==len(doc):
+                image_tail.clear()  # A scanned article still needs OCR.
+        pages=[i for i in range(len(doc)) if i+1 not in facade and i+1 not in image_tail]
         boxes=parse_pages(doc,pages,ocr,language) if pages else {}
         crop_large_figures(doc,boxes)
         body=body_font_size(boxes)
@@ -363,7 +399,9 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
             if b.rect.width < .18*surface.width or b.rect.height < .10*surface.height:
                 b.used=True
         html=[]
-        report={'title':title,'source':str(Path(pdf).resolve()),'pages':[],'unmatched_captions':[]}
+        report={'title':title,'source':str(Path(pdf).resolve()),'source_sha256':digest,
+                'pages':[],'unmatched_captions':[],'unlabelled_pictures':[],
+                'options':{'ocr':ocr,'ocr_language':language,'facsimile':sorted(facade)}}
         counts={'picture':0,'formula':0,'table':0}
         title_norm=lambda s:re.sub(r'\W+','',s.casefold())
         for group in boxes.values():
@@ -385,6 +423,8 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
                     caption='<figcaption data-pdf-page="'+str(cap[0].page+1)+'">'+caption_text(cap)+'</figcaption>'
                 if b.kind in VISUAL:
                     counts[b.kind]+=1
+                    if b.kind=='picture' and not paired:
+                        report['unlabelled_pictures'].append({'page':number,'bbox':list(b.rect)})
                     alt=paired[0].title() if paired else f'{b.kind.title()} on PDF page {number}'
                     tag=f'<figure data-pdf-page="{number}"'+(f' id="{identifier}"' if identifier else '')+'>'
                     image=png(doc,page,b.rect,dpi=215 if b.kind=='formula' else 180)
@@ -402,10 +442,12 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
                     report['unmatched_captions'].append({'label':label,'page':number})
                     content.append('<figure id="'+re.sub(r'[^a-z0-9]+','-',label.strip().casefold())+'"><figcaption>'
                                    +' '.join(simple_inline(x.html) for x in cap)+'</figcaption></figure>')
-            preserved=number in facade or not (content or group)
+            preserved=number in facade or number in image_tail or not (content or group)
+            if any(cap[0].page==page and NEXT_PAGE.search(cap[0].text) for cap in captions.values()):
+                preserved=True
             if preserved:
-                content.append(f'<details class="source-page"><summary>Original PDF page {number}</summary>'
-                    +zoom(png(doc,page,dpi=150),f'PDF page {number}')+'</details>')
+                content.append(f'<details class="source-page"><summary>PDF 原版 · 第 {number} 页</summary>'
+                    +zoom(png(doc,page,dpi=180),f'PDF page {number}')+'</details>')
             html.extend(content)
             report['pages'].append({'page':number,'extracted_blocks':len(group),'facsimile':preserved})
         report['counts']=counts

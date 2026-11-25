@@ -62,7 +62,10 @@ def translation_rows(dom):
     result=[]
     in_refs=False
     section=""
+    numbered = {id(item) for group in numbered_references(dom) for item in group.find_all('li')}
     for node in nodes(dom):
+        if id(node) in numbered:
+            continue
         plain=node.get_text(' ',strip=True)
         if re.fullmatch('h[2-6]',node.name):
             section=plain
@@ -96,6 +99,56 @@ def prepare_job(work):
     data=[{k:v for k,v in row.items() if k!='node'} for row in rows]
     store(work/'translation-input.json',data)
     return data
+
+
+def normalize_source(work):
+    """Repair source structure once, before computing translation identities."""
+    dom = article_dom(work)
+    normalize_breaks(dom)
+    flatten_fake_tables(dom)
+    split_numbered_references(dom)
+    label_implicit_references(dom)
+    label_first_page_abstract(dom)
+    if not dom.select_one('.abstract'):
+        hoist_front_matter(dom)
+    join_broken_paragraphs(dom)
+    path = work / 'article.html'
+    pending = path.with_suffix('.pending')
+    pending.write_text(str(dom), encoding='utf-8')
+    pending.replace(path)
+
+
+def label_first_page_abstract(dom):
+    """Make an unlabeled abstract navigable when it follows submission metadata."""
+    first = dom.find(id='page-1')
+    if first is None or dom.find(lambda tag: tag.name in ('h2','h3','h4') and
+                                 tag.get_text(' ', strip=True).casefold() in ('abstract','summary')):
+        return
+    previous = []
+    for node in first.find_next_siblings(limit=14):
+        if node.get('id') == 'page-2':
+            break
+        text = node.get_text(' ', strip=True)
+        if node.name == 'p' and len(text)>400 and re.search(r'\bPublished online:', ' '.join(previous), re.I):
+            heading = dom.new_tag('h2')
+            heading.string = 'Abstract'
+            node.insert_before(heading)
+            for candidate in first.find_next_siblings():
+                if candidate.get('id') == 'page-2':
+                    break
+                if candidate is heading or candidate is node:
+                    continue
+                label = candidate.get_text(' ', strip=True)
+                if candidate.name == 'blockquote' or re.match(r'^(?:Accepted|Received|Published online):',label):
+                    heading.insert_before(candidate.extract())
+                elif candidate.name == 'p' and label.casefold() == 'check for updates':
+                    candidate.decompose()
+            panel = dom.new_tag('section', attrs={'class':'abstract'})
+            heading.insert_before(panel)
+            panel.append(heading.extract())
+            panel.append(node.extract())
+            return
+        previous.append(text)
 
 def split_pair(dom,node,target):
     orig=dom.new_tag('span',attrs={'lang':'en','class':'source-text'})
@@ -133,6 +186,8 @@ def add_reference_links(dom,numbers):
     if not numbers:
         return
     for sup in dom.select('p sup,figcaption sup'):
+        if sup.find_parent(['blockquote','header']):
+            continue
         text=sup.get_text()
         following=sup.find_next_sibling(string=True)
         if following and re.match(r'^(?:[CNOHPS]|Cl|Ca|Na)(?:\b|[−-])',str(following).lstrip()):
@@ -155,19 +210,24 @@ CITE=re.compile(r'([A-Z][A-Za-zÀ-ÿ\'’\-]+(?:\s+(?:et\s+al\.|and\s+[A-Z][A-Za
 
 def structure_references(dom):
     """Split the bibliography into addressable entries keyed by author, year and number."""
+    numbered = numbered_references(dom)
     heading=None
     for node in dom.find_all(['h2','h3','h4','h5','h6']):
         label=node.select_one('.source-text') or node
         if label.get_text(' ',strip=True).lower() in REF_TITLES:
             heading=node
             break
-    if heading is None:
-        return {},{}
     body=[]
-    for sibling in heading.find_next_siblings():
-        if re.fullmatch(r'h[1-6]',sibling.name or ''):
-            break
-        body.append(sibling)
+    if numbered:
+        body = numbered
+    elif heading is not None:
+        for sibling in heading.find_next_siblings():
+            if re.fullmatch(r'h[1-6]',sibling.name or ''):
+                break
+            if 'page-anchor' not in sibling.get('class', []):
+                body.append(sibling)
+    else:
+        return {}, {}
     entries=[]
     for node in body:
         if node.name=='ol':
@@ -198,8 +258,14 @@ def structure_references(dom):
     entries=[(number,re.sub(r'\s+',' ',text).strip()) for number,text in entries if text.strip()]
     if not entries:
         return {},{}
-    for node in body:
-        node.extract()
+    implicit = bool(numbered)
+    if implicit:
+        destinations = [item for node in body for item in node.find_all('li', recursive=False)]
+    else:
+        marker = dom.new_tag('div')
+        heading.insert_after(marker)
+        for node in body:
+            node.extract()
     index={}
     numbers={}
     used=set()
@@ -218,7 +284,12 @@ def structure_references(dom):
         anchor=f'ref-{slug}'
         node=dom.new_tag('p',attrs={'class':'ref-entry','id':anchor})
         node.string=entry
-        heading.insert_before(node)
+        if implicit:
+            item = destinations[position-1]
+            item['id'] = anchor
+            item['class'] = ['ref-entry']
+        else:
+            marker.insert_before(node)
         if number is not None:
             numbers[number]=anchor
         if surnames:
@@ -226,7 +297,47 @@ def structure_references(dom):
         if year:
             for surname in surnames[:2]:
                 index.setdefault(f'{surname.lower()}-{year.group()[1:5]}',anchor)
+    if not implicit:
+        marker.decompose()
     return index,numbers
+
+
+def numbered_references(dom):
+    """Recognize a publisher's unheaded, numbered bibliography."""
+    return [ol for ol in dom.find_all('ol')
+            if (items := ol.find_all('li', recursive=False))
+            and all(re.search(r'\((?:[^()]{0,60},\s*)?(?:19|20)\d{2}[a-z]?\)',item.get_text(' ', strip=True))
+                    or re.search(r'https?://(?:doi\.org|zenodo\.org)', item.get_text(' ', strip=True))
+                    for item in items)]
+
+
+def split_numbered_references(dom):
+    for group in numbered_references(dom):
+        number = int(group.get('start', 1))
+        for item in list(group.find_all('li', recursive=False)):
+            text = item.get_text(' ', strip=True)
+            while (cut := re.search(
+                    rf'(?<=\)\.)\s+{number+1}\.\s+(?=[A-ZÀ-Ý][\w’\'-]+,\s+[A-Z])',text)):
+                first = dom.new_tag('li')
+                first.string = text[:cut.start()]
+                item.insert_before(first)
+                text = text[cut.end():]
+                item.string = text
+                number += 1
+            number += 1
+
+
+def label_implicit_references(dom):
+    previous = None
+    for group in numbered_references(dom):
+        sibling = group.find_previous_sibling()
+        while sibling and 'page-anchor' in sibling.get('class', []):
+            sibling = sibling.find_previous_sibling()
+        if sibling is not previous and (not sibling or sibling.get_text(' ', strip=True).casefold() not in REF_TITLES):
+            heading = dom.new_tag('h2')
+            heading.string = 'References'
+            group.insert_before(heading)
+        previous = group
 
 def link_citations(dom,index):
     if not index:
@@ -423,14 +534,22 @@ def flatten_fake_tables(dom):
 def join_broken_paragraphs(dom):
     """Re-join paragraphs a column break cut in half."""
     terminal=re.compile(r'[.!?。！？:：；;）)\]]$')
+    def continuation(node):
+        following = node.find_next_sibling()
+        while following and (following.name == 'figure' or 'page-anchor' in following.get('class', [])):
+            following = following.find_next_sibling()
+        return following
     for paragraph in list(dom.select('p')):
-        if is_meta_block(paragraph):
+        if paragraph.parent is not dom or is_meta_block(paragraph):
             continue
-        following=paragraph.find_next_sibling('p')
-        while following is not None:
+        following=continuation(paragraph)
+        while following is not None and following.name=='p':
             head=paragraph.get_text(' ',strip=True)
             tail=following.get_text(' ',strip=True)
-            if terminal.search(head) or not tail or not tail[0].islower():
+            continues = (re.match(r'^\(?[a-z]',tail)
+                         or (head.count('(')>head.count(')') and re.match(r'^(?:Table|Fig\.) \d',tail))
+                         or (re.search(r'\b\d+[A-Z]$',head) and re.match(r'^[A-Z][a-z]+ [a-z]',tail)))
+            if len(head)<75 or terminal.search(head) or not continues or is_meta_block(following):
                 break
             source=paragraph.select_one(':scope > .source-text')
             target=paragraph.select_one(':scope > .translation-text')
@@ -449,7 +568,7 @@ def join_broken_paragraphs(dom):
                 for child in list(following.contents):
                     paragraph.append(child.extract())
             following.decompose()
-            following=paragraph.find_next_sibling('p')
+            following=continuation(paragraph)
 
 def normalize_breaks(dom):
     """Replace soft line breaks inside prose.
@@ -482,20 +601,28 @@ def review_units(dom):
     """Collect text units a human or model should look at."""
     items=[]
     mode=getattr(dom.body,'attrs',{}).get('data-mode','en') if dom.body else 'en'
-    hidden='.source-text' if mode in ('zh','zh-Hans') else '.translation-text' if mode=='en' else None
-    blocks=[node for node in dom.select('p, li, figcaption')
-            if node.get_text(strip=True) and not (hidden and node.select_one(hidden))]
+    langs = ('en','zh') if mode=='both' else ('zh',) if mode in ('zh','zh-Hans') else ('en',)
+    for lang in langs:
+        items.extend(review_language(dom, lang))
+    return items
+
+
+def review_language(dom, lang):
+    chosen = '.translation-text' if lang == 'zh' else '.source-text'
     previous=''
-    for index,node in enumerate(blocks):
-        text=re.sub(r'\s+',' ',node.get_text(' ',strip=True))
+    for index,node in enumerate(dom.select('main p, main li, main figcaption, #rail figcaption')):
+        unit = node.select_one(':scope > ' + chosen) or node
+        text=re.sub(r'\s+',' ',unit.get_text(' ',strip=True))
+        if not text or node.get('class') == ['ref-entry'] or node.find_parent(class_='ref-entry'):
+            continue
         reasons=[]
         meta=bool(META_START.match(text)) or bool(re.match(r'^\d\s*[A-Z]',text)) or text.count(',')>=6
         if meta:
             previous=text
             continue
-        if len(text)<45 and node.name=='p':
+        if len(text)<(15 if lang=='zh' else 45) and node.name=='p':
             reasons.append('short')
-        if '  ' in node.get_text():
+        if '  ' in unit.get_text():
             reasons.append('double-space')
         if node.name=="p" and len(text)>120 and not re.search(r'[.!?。！？:：；;]$',text):
             reasons.append('no-terminal')
@@ -503,12 +630,11 @@ def review_units(dom):
             reasons.append('repeat')
         if re.fullmatch(r'\d{1,4}',text):
             reasons.append('digit')
-        if any(len(token)>40 and not re.search(r'\d',token) for token in text.split()):
+        if re.search(r'[A-Za-z]{41,}',text):
             reasons.append('long-word')
         if reasons:
-            items.append({'index':index,'reasons':reasons,'text':text[:400]})
+            yield {'index':index,'language':lang,'reasons':reasons,'text':text[:400]}
         previous=text
-    return items
 
 def load_polish(work):
     path=work/'polish.json'
@@ -524,14 +650,20 @@ def apply_patch(work,patch_path):
     if not isinstance(fixes,list):
         raise ValueError('The patch file must hold a list of {find, replace} objects.')
     target=work/'polish.json'
-    merged=load_polish(work)+[entry for entry in fixes if entry.get('find')]
-    target.write_text(json.dumps(merged,ensure_ascii=False,indent=2),encoding='utf-8')
+    merged=load_polish(work)
+    for entry in fixes:
+        if not isinstance(entry,dict) or not isinstance(entry.get('find'),str) or not entry['find'] or not isinstance(entry.get('replace'),str):
+            raise ValueError('Each patch requires a nonempty find string and a replace string.')
+        if entry not in merged:
+            merged.append(entry)
+    store(target, merged)
     print(f'{len(merged)} fixes recorded in {target}')
 
 def place_figures(dom):
     """Leave a slot at the section that first mentions each plate; return the plates."""
     article=dom.select_one('article') or dom
-    plates=[tag for tag in article.find_all('figure') if str(tag.get('id','')).startswith(('figure-','table-'))]
+    plates=[tag for tag in article.find_all('figure')
+            if re.fullmatch(r'(?:(?:extended-data|supplementary|supporting)-)?(?:figure|table)-[a-z]?\d+[a-z]?',tag.get('id',''))]
     kept=[]
     for plate in plates:
         identifier=plate['id']
@@ -548,15 +680,16 @@ def place_figures(dom):
                     break
             if position is not None:
                 break
-        if position is None:
-            continue
         slot=dom.new_tag('div',attrs={'class':'fig-slot','id':f'slot-{identifier}','data-fig':identifier})
-        following=[child for child in article.children if isinstance(child,Tag)][position+1:]
-        heading=next((child for child in following if re.fullmatch(r'h[2-6]',child.name or '')),None)
-        if heading is None:
-            article.append(slot)
+        if position is None:
+            plate.insert_before(slot)
         else:
-            heading.insert_before(slot)
+            following=blocks[position+1:]
+            heading=next((child for child in following if re.fullmatch(r'h[2-6]',child.name or '')),None)
+            if heading is None:
+                plate.insert_before(slot)
+            else:
+                heading.insert_before(slot)
         plate.extract()
         kept.append(plate)
     return kept
@@ -570,7 +703,6 @@ def render(work,output,translation,mode):
         raise ValueError('Unknown reader language mode.')
     anchor_ids={n['id'] for n in dom.select('[id]')}
     primary=[]
-    minor=[]
     for i,h in enumerate(dom.select('h2,h3,h4,h5,h6'),1):
         anchor=f'section-{i}'
         h['id']=anchor
@@ -578,10 +710,7 @@ def render(work,output,translation,mode):
         if label.lower() in CAPTION_TITLE:
             h.name='h2'
             primary.append(h)
-        else:
-            minor.append(h)
-    headings=primary if len(primary)>=3 else primary+minor
-    headings=headings[:20]
+    headings=[h for h in dom.select('h2,h3,h4,h5,h6') if h in primary or h.name in ('h2','h3','h4')][:32]
     if bilingual:
         for row in translation_rows(dom):
             if row['role'] in ('h2','h3','h4','h5','h6') and row['text'].lower() in CAPTION_TITLE:
@@ -599,7 +728,7 @@ def render(work,output,translation,mode):
             node['class']=(node.get('class') or [])+['plain']
     # structural passes rely on plain text blocks; bilingual documents carry
     # paired spans, so they are left to the review loop instead
-    if not bilingual:
+    if not bilingual and not (work/'source-normalized.json').exists():
         join_broken_paragraphs(dom)
         hoist_front_matter(dom)
     normalize_breaks(dom)
@@ -676,8 +805,9 @@ def render(work,output,translation,mode):
 <script>{js}</script></body></html>'''
     for entry in load_polish(work):
         find=entry.get('find')
-        if find and find in result:
-            result=result.replace(find,entry.get('replace',''),1)
+        if not find or result.count(find)!=1:
+            raise ValueError('Polish patch must match exactly once: '+repr(str(find)[:100]))
+        result=result.replace(find,entry.get('replace',''),1)
     verify(result)
     output.parent.mkdir(parents=True,exist_ok=True)
     pending=output.with_suffix(output.suffix+'.tmp')
@@ -689,12 +819,16 @@ def verify(html):
     ids=[n['id'] for n in dom.select('[id]')]
     if len(ids)!=len(set(ids)):
         raise ValueError('Some anchors are duplicated.')
+    pages = [n.get('id') for n in dom.select('.page-anchor')]
+    if not pages or pages != [f'page-{i}' for i in range(1, len(pages)+1)]:
+        raise ValueError('PDF page anchors are missing or out of order.')
     uniq=set(ids)
     if any(a['href'][1:] not in uniq for a in dom.select('a[href^="#"]')):
         raise ValueError('Some links point to missing anchors.')
     if dom.select('script[src],iframe,link[rel="stylesheet"]') or any(not img.get('src','').startswith('data:image/png;base64,') for img in dom.select('img')):
         raise ValueError('Reader contains external visual or script assets.')
-    if any(len(n.select(':scope > .source-text, :scope > .translation-text'))!=2 for n in dom.select('article .parallel')):
+    if any(any(len(n.select(':scope > .' + cls))!=1 for cls in ('source-text','translation-text'))
+           for n in dom.select('article .parallel, #rail .parallel')):
         raise ValueError('A bilingual text block is incomplete.')
     return len(dom.select('.page-anchor')),len(dom.select('figure')),len(dom.select('article .translation-text'))
 
@@ -724,7 +858,7 @@ def cli():
     extraction_options(convert)
     translator_option(convert)
     convert.add_argument('output',type=Path)
-    convert.add_argument('--mode',choices=['en','zh','both'],default='both')
+    convert.add_argument('--mode',choices=['en','zh','both'],default='en')
     prep=commands.add_parser('prepare')
     extraction_options(prep)
     mt=commands.add_parser('translate')
@@ -780,6 +914,8 @@ def cli():
             if args.command=='convert' and args.output.resolve()==args.pdf.resolve():
                 raise ValueError('The HTML output cannot replace the source PDF.')
             audit=extract(args.pdf,args.work,ocr=args.ocr,language=args.ocr_language,facade=selected_pages(args.facsimile))
+            normalize_source(args.work)
+            store(args.work/'source-normalized.json', {'version': 1})
             unfinished=[c for c in audit.get('caption_audit',[]) if not c['clean_end']]
             print(f'Parsed {len(audit["pages"])} pages; visuals: {audit["counts"]}; unmatched captions: {len(audit["unmatched_captions"])}',flush=True)
             if audit.get('caption_strategy')=='labels-only':

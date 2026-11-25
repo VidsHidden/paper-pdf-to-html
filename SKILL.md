@@ -22,17 +22,19 @@ description: Convert an uploaded or local academic PDF into a single offline HTM
 
 目录折叠、图表栏开关和五档字号用原生 checkbox/radio 加 CSS 实现，不依赖脚本，在 Zotero 阅读器这类禁用 JavaScript 的环境里同样可用。脚本只负责：记住字号与栏宽、拖拽调宽、点击引用弹浮层、图表在窄屏回到小节末尾。
 
-## AI 校订（必做）
+## 校订与复现
 
-脚本只做规则能定的部分（行内断行归并、栏末折断段落合并、伪表格还原、投稿信息上提）。断词、错配、术语这类要判断的，必须由模型过一遍：
+先在原文阶段校订，再翻译。原文的断段、伪表格、图注和首页结构在生成译文区块之前处理，三个阅读模式复用同一底稿。始终按下列顺序工作。
 
-1. `uv run <skill>/scripts/reader.py review OUTPUT.html`，把可疑文字单元写到 `OUTPUT.review.json`。每项含 `reasons`：`no-terminal`（段落没收尾）、`repeat`（相邻重复）、`digit`（疑似页码）、`long-word`（疑似连写）、`short`、`double-space`。
-2. 对照 PDF 逐条判断，**能确定怎么改才写补丁**，不确定就保留原样并在汇报里说明。
-3. 把修改写成 `patch.json`：`[{"find": "原文片段", "replace": "改后片段"}]`，然后 `reader.py apply --work WORKDIR patch.json`，改动会追加进 `WORKDIR/polish.json`。
-4. 重新 `render`：渲染末尾会自动套用 `polish.json`，因此补丁可重复生效，也留下可审计的改动记录。
+1. 用 `prepare INPUT.pdf --work WORKDIR` 生成原文中间稿、提取报告和待译区块。按 PDF 文件页码检查双栏、跨页图注、参考文献和附页。需要保留原版时记录具体页码与原因；原版附页会以折叠卡片展示。
+2. 对照 PDF 修正中间稿；需要中文时再运行 `translate --work WORKDIR`。保存译文 JSON。参考文献保留原语种。保护单位、上下标和引文占位符。
+3. 用 `render OUTPUT.html --work WORKDIR --mode en|zh|both` 生成成品。双语复现时用 `--translations` 指向已校订的译文 JSON，避免重新请求模型。
+4. 用 `review OUTPUT.html` 查看可疑段落。逐项对照原 PDF；双语模式按两个语种分别记录。末端补丁可用 `apply --work WORKDIR patch.json` 登记，同一补丁重复登记不会叠加。渲染时查找串必须唯一命中。
+
+复现时保留原 PDF、提取选项、审核后的 `article.html`、校订记录和最终译文 JSON。用独立目录从头转换来检查提取稳定性；用同一份已冻结的中间稿与译文重新渲染来检查交付文件一致性。
 
 ## 检查成品
 
-1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。`caption_audit` 列出每条图注的字数和是否以句末标点收尾；`clean_end` 为 false 的说明图注被分页截断，先看能不能补齐，补不上就对该页用 `--facsimile`。`caption_strategy` 为 `labels-only` 表示扫描件没有字号信息，图注只能按图号锚定。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。
+1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。`caption_audit` 列出每条图注的字数和是否以句末标点收尾；`clean_end` 为 false 的说明图注被分页截断，先看能不能补齐，补不上就对该页用 `--facsimile`。`caption_strategy` 为 `labels-only` 表示扫描件没有字号信息，图注只能按图号锚定。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。对照图版确认面板齐全，留意报告中的 `unlabelled_pictures`。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。
 2. 翻译时通读标题、摘要和关键结论。检查专名、同位素、单位、数值和引文。保留作者表述的确定程度，标明机器译文的校订范围。结构化参考文献原样保留。
 3. 运行 `uv run <skill>/scripts/reader.py verify OUTPUT.html`，用浏览器点验目录、语言切换和图片放大。最终只交付 HTML，说明实际采用的回退和校订范围。
