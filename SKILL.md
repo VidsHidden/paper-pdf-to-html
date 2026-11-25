@@ -14,9 +14,10 @@ description: Convert an uploaded or local academic PDF into a single offline HTM
 - 原文版运行 `uv run <skill>/scripts/reader.py convert INPUT.pdf OUTPUT.html --work WORKDIR --mode en`。
 - 中英对照版改用 `--mode both`，仅将中文设为初始视图时使用 `--mode zh`。默认使用本机翻译。用户明确指定 DeepSeek 时加 `--translator deepseek`，从 Mac 钥匙串读取凭据。用户选择其他兼容 API 时加 `--translator api`，使用已经配置的服务地址、模型和密钥。DeepSeek 的首次设置通过 `reader.py deepseek-setup` 弹出本机密码框。配置方法、首次模型准备和分步校订见 [运行与校订](references/operation.md)。
 - 默认按需 OCR。知道原件有清晰文字层时可用 `--ocr off`。扫描件可用 `--ocr force --ocr-language eng`，并检查 OCR。需要完整保留表单或特别复杂的页面时用 `--facsimile 33-37` 一类的 **PDF 文件页码**。仅对需要保留原貌的页使用该选项。
+- 期刊排版常用矢量图（Elsevier、Cell Press、Nature 等）。脚本以图注为锚点把整版区域恢复成一张裁图，收紧到实际绘图内容的边界，剔除页角的出版社水印，并丢弃没有图注的小碎片。某页仍被拆散或裁偏时，用 `--facsimile` 保留该页原貌。
 
 ## 检查成品
 
-1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。发现错配时在中间稿修正，或者保留该页原图并说明。
+1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。
 2. 翻译时通读标题、摘要和关键结论。检查专名、同位素、单位、数值和引文。保留作者表述的确定程度，标明机器译文的校订范围。结构化参考文献原样保留。
 3. 运行 `uv run <skill>/scripts/reader.py verify OUTPUT.html`，用浏览器点验目录、语言切换和图片放大。最终只交付 HTML，说明实际采用的回退和校订范围。

@@ -165,6 +165,36 @@ def zoom(image,alt):
     return (f'<button class="zoom" type="button" aria-label="Enlarge {escape(alt,quote=True)}">'
         +image.replace('<img ',f'<img alt="{escape(alt,quote=True)}" ',1)+'</button>')
 
+def ink_area(page, area):
+    """Tighten a plate region to the drawn content, ignoring a corner watermark."""
+    width,height=page.rect.width,page.rect.height
+    scan=pymupdf.Rect(area.x0,area.y0,area.x1,min(page.rect.y1,area.y1+24))
+    rects=[]
+    for item in page.get_drawings():
+        rect=pymupdf.Rect(item['rect'])&page.rect
+        if not rect.is_empty and rect.intersects(scan):
+            rects.append(rect)
+    for info in page.get_image_info():
+        rect=pymupdf.Rect(info['bbox'])&page.rect
+        if not rect.is_empty and rect.intersects(scan):
+            rects.append(rect)
+    if not rects:
+        return area
+    # Publisher watermarks and logos sit alone in a top corner and must not enlarge the plate.
+    corner=[r for r in rects if r.y1<.1*height and (r.x1<.15*width or r.x0>.85*width)]
+    rest=[r for r in rects if not any(r==c for c in corner)]
+    if corner and rest and min(r.y0 for r in rest)>max(r.y1 for r in corner):
+        rects=rest
+    box=pymupdf.Rect(min(r.x0 for r in rects),min(r.y0 for r in rects),
+                     max(r.x1 for r in rects),max(r.y1 for r in rects))
+    box.x0=max(box.x0,area.x0); box.x1=min(box.x1,area.x1); box.y0=max(box.y0,area.y0)
+    # Panel art can sit a hair below the caption line; keep it when it is close.
+    if box.y1-area.y1>18:
+        box.y1=area.y1
+    if box.is_empty or box.width<.25*width or box.height<.08*height:
+        return area
+    return (box+(-3,-3,3,3))&page.rect
+
 def crop_large_figures(doc, page_boxes):
     for page, boxes in page_boxes.items():
         labels=[b for b in boxes if b.label and 'figure' in b.label]
@@ -172,18 +202,37 @@ def crop_large_figures(doc, page_boxes):
             continue
         label=labels[0]
         surface=doc[page].rect
-        if label.rect.y0 < .58*surface.height:
-            continue
-        area=pymupdf.Rect(surface.x0,.05*surface.height,surface.x1,label.rect.y0-4)
-        before=[b for b in boxes if b.rect.y1 <= label.rect.y0+1 and b.rect.y0 < area.y1]
-        prose=[b for b in before if b.kind in ('text','list-item','section-header') and len(b.text)>140
-               and len(re.findall(r'[a-z]+',b.text))>=16]
+        caption_column=[]
+        if label.rect.y0 >= .58*surface.height:
+            area=pymupdf.Rect(surface.x0,.05*surface.height,surface.x1,label.rect.y0-4)
+        else:
+            # A caption at the top of the page still anchors a plate that fills the page.
+            caption_column=[b for b in boxes if b is not label
+                            and abs(b.rect.x0-label.rect.x0)<10
+                            and b.rect.y0 >= label.rect.y1-2 and b.rect.y1 <= label.rect.y1+420]
+            floor=max([label.rect.y1]+[b.rect.y1 for b in caption_column])
+            prose=[b for b in boxes if b.kind in ('text','list-item','section-header') and not b.label
+                   and len(b.text)>140 and len(re.findall(r'[a-z]+',b.text))>=16
+                   and b.rect.y0 > floor+8]
+            if not prose:
+                continue
+            area=pymupdf.Rect(surface.x0,.04*surface.height,surface.x1,min(b.rect.y0 for b in prose)-4)
+            if label.rect.x0 > .4*surface.width and label.rect.y1 <= area.y1+20:
+                # The caption occupies its own column; keep it out of the plate.
+                area.x1=min(area.x1,label.rect.x0-3)
+        before=[b for b in boxes if b.rect.y0 < area.y1 and b.rect.y1 <= area.y1+18]
+        skip={id(label)}|{id(b) for b in caption_column}
+        prose=[b for b in before if id(b) not in skip
+               and b.kind in ('text','list-item','section-header') and not b.label
+               and len(b.text)>140 and len(re.findall(r'[a-z]+',b.text))>=16]
         if prose or not any(b.kind in ('picture','table') for b in before):
             continue
         # Recover the whole plate when a caption identifies a figure-only region.
         # A layout model may report only some image panels or misclassify plots as tables.
+        area=ink_area(doc[page],area)
         for b in before:
-            b.used=True
+            if id(b) not in skip:
+                b.used=True
         boxes.append(Box(page,'picture',area,'','',label.label))
 
 def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
@@ -214,6 +263,14 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
                     found=min(candidates,key=lambda b:distances(caption[0],b))
                     if found.label or distances(caption[0],found)<270:
                         assigned[id(found)]=(label,caption)
+        # Vector plates leave caption-less slivers behind: an unpaired picture smaller
+        # than a readable panel is a fragment of a figure, not a figure.
+        for b in pictures:
+            if id(b) in assigned:
+                continue
+            surface=doc[b.page].rect
+            if b.rect.width < .18*surface.width or b.rect.height < .10*surface.height:
+                b.used=True
         html=[]
         report={'title':title,'source':str(Path(pdf).resolve()),'pages':[],'unmatched_captions':[]}
         counts={'picture':0,'formula':0,'table':0}
