@@ -24,6 +24,21 @@ for (const input of sizeInputs) {
   });
 }
 
+/* ---------- rail text size, independent of the article ---------- */
+const RAIL_SIZE_KEY = 'paper-reader-rail-size';
+const railSizeInputs = [...document.querySelectorAll('input[name="rail-size"]')];
+try {
+  const saved = localStorage.getItem(RAIL_SIZE_KEY);
+  const target = saved === null ? null : document.getElementById('rail-size-' + saved);
+  if (target) target.checked = true;
+} catch (error) { /* ignore */ }
+for (const input of railSizeInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    try { localStorage.setItem(RAIL_SIZE_KEY, input.id.replace('rail-size-', '')); } catch (error) { /* ignore */ }
+  });
+}
+
 /* ---------- rail width: presets stay in CSS, dragging is an extra ---------- */
 const RESIZE_KEY = 'paper-reader-rail-width';
 const resizer = document.getElementById('rail-resizer');

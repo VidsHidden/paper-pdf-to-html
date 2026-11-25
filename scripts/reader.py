@@ -460,6 +460,10 @@ def render(work,output,translation,mode):
 <input class="switch" type="radio" name="rail-width" id="rail-w-0">
 <input class="switch" type="radio" name="rail-width" id="rail-w-1" checked>
 <input class="switch" type="radio" name="rail-width" id="rail-w-2">
+<input class="switch" type="radio" name="rail-size" id="rail-size-0">
+<input class="switch" type="radio" name="rail-size" id="rail-size-1" checked>
+<input class="switch" type="radio" name="rail-size" id="rail-size-2">
+<input class="switch" type="radio" name="rail-size" id="rail-size-3">
 <div class="app">
 <header class="topbar">
 <label class="ctrl" for="outline-switch" title="收起或展开目录"><span aria-hidden="true">☰</span> 目录</label>
@@ -484,7 +488,7 @@ def render(work,output,translation,mode):
 <nav id="outline" aria-label="Contents">{nav}</nav>
 <main><article>{dom}</article></main>
 <div class="rail-resizer" id="rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整图表栏宽度" tabindex="0"></div>
-<aside id="rail" aria-label="Figures and tables">{rail}</aside>
+<aside id="rail" aria-label="Figures and tables"><div class="rail-head"><span>图表 · FIGURES</span><div class="rail-size" role="group" aria-label="图表字号"><label class="rs-0" for="rail-size-0" title="图表字号：小">A</label><label class="rs-1" for="rail-size-1" title="图表字号：中">A</label><label class="rs-2" for="rail-size-2" title="图表字号：大">A</label><label class="rs-3" for="rail-size-3" title="图表字号：特大">A</label></div></div>{rail}</aside>
 </div>
 </div>
 <div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
