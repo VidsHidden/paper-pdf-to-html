@@ -481,7 +481,10 @@ def review_html(html):
 def review_units(dom):
     """Collect text units a human or model should look at."""
     items=[]
-    blocks=[node for node in dom.select('p, li, figcaption') if node.get_text(strip=True)]
+    mode=getattr(dom.body,'attrs',{}).get('data-mode','en') if dom.body else 'en'
+    hidden='.source-text' if mode in ('zh','zh-Hans') else '.translation-text' if mode=='en' else None
+    blocks=[node for node in dom.select('p, li, figcaption')
+            if node.get_text(strip=True) and not (hidden and node.select_one(hidden))]
     previous=''
     for index,node in enumerate(blocks):
         text=re.sub(r'\s+',' ',node.get_text(' ',strip=True))
