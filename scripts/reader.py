@@ -257,6 +257,34 @@ def label_captions(dom):
         label.string=match.group().strip()
         first.replace_with(label, NavigableString(value[match.end():]))
 
+PANEL=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
+LEGEND=re.compile(r'^(?:[（(]?图例续下页[)）]?|[(（]?legend continued|see also (?:figure|table|fig\.))',re.I)
+
+def gather_captions(dom):
+    """Pull the legend paragraphs that trail a figure into that figure."""
+    for figure in dom.select('figure'):
+        if not figure.select_one('figcaption'):
+            continue
+        block=[]
+        node=figure
+        while True:
+            node=node.next_sibling
+            if node is None:
+                break
+            if isinstance(node,Tag):
+                if re.fullmatch(r'h[1-6]',node.name or '') or node.name in ('figure','table','details'):
+                    break
+                block.append(node)
+        panels=[node for node in block if node.name=='p'
+                and (PANEL.match(node.get_text(' ',strip=True)) or LEGEND.match(node.get_text(' ',strip=True)))]
+        if not panels:
+            continue
+        body=dom.new_tag('div',attrs={'class':'caption-body'})
+        for node in panels:
+            node.extract()
+            body.append(node)
+        figure.append(body)
+
 def place_figures(dom):
     """Move each plate to the end of the section that first mentions it."""
     article=dom.select_one('article') or dom
@@ -320,6 +348,7 @@ def render(work,output,translation,mode):
     add_reference_links(dom,reference_numbers)
     link_citations(dom,reference_index)
     label_captions(dom)
+    gather_captions(dom)
     place_figures(dom)
     labels=[]
     for heading in headings:

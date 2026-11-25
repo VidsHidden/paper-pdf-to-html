@@ -40,6 +40,7 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 /* ---------- shell ---------- */
 .shell {
   display: grid; grid-template-columns: var(--ow) minmax(0, 1fr) var(--rw);
+  grid-template-areas: "outline main rail";
   gap: clamp(1.4rem, 2.4vw, 2.6rem);
   max-width: 104rem; margin: 0 auto; padding: 0 clamp(.9rem, 2vw, 2rem) 5rem;
 }
@@ -49,6 +50,7 @@ body[data-outline="closed"] #outline,
 body[data-rail="closed"] #rail { display: none; }
 
 #outline {
+  grid-area: outline;
   position: sticky; top: var(--topbar); height: calc(100vh - var(--topbar));
   overflow-y: auto; overscroll-behavior: contain; padding: 1.4rem 0 2rem;
   font: .84rem/1.4 system-ui, sans-serif;
@@ -68,7 +70,7 @@ body[data-rail="closed"] #rail { display: none; }
 }
 
 /* ---------- article ---------- */
-main { min-width: 0; }
+main { grid-area: main; min-width: 0; }
 article { max-width: 47rem; margin: 0 auto; padding-top: 2.2rem; }
 main article > header h1 { margin-top: 0; }
 h1 { font: 700 clamp(1.9rem, 3.4vw, 2.85rem)/1.15 Georgia, serif; letter-spacing: -.028em; margin: .5rem 0 1.1rem; text-wrap: balance; }
@@ -115,6 +117,9 @@ figcaption {
   font-size: .84rem; line-height: 1.65; color: #35413f;
 }
 figcaption .caption-label { font-weight: 700; color: var(--ink); }
+.caption-body { margin-top: .5rem; }
+.caption-body p { margin: .45rem 0 0; font-size: .84rem; line-height: 1.65; color: #35413f; }
+#rail .caption-body p { font-size: .78rem; }
 .flash { animation: flash 1.4s ease-out; }
 @keyframes flash {
   0%, 40% { box-shadow: 0 0 0 3px #7fc0ad; }
@@ -126,6 +131,7 @@ a.figref { color: var(--accent); font-weight: 600; }
 
 /* ---------- rail ---------- */
 #rail {
+  grid-area: rail;
   position: sticky; top: var(--topbar); height: calc(100vh - var(--topbar));
   overflow-y: auto; overscroll-behavior: contain; padding: 0 0 3rem;
   border-left: 1px solid var(--line);
@@ -166,12 +172,12 @@ dialog .close { display: block; margin: .7rem 1rem .7rem auto; padding: .32rem .
 /* ---------- responsive ---------- */
 @media (max-width: 1180px) {
   #rail-toggle { display: none; }
-  .shell { grid-template-columns: var(--ow, 13rem) minmax(0, 1fr); }
   body { --rw: 0px; }
   #rail { display: none; }
 }
 @media (max-width: 900px) {
   .shell { display: block; padding-bottom: 3rem; }
+  .fig-caption p, .caption-body p { font-size: .84rem; }
   #outline {
     position: static; height: auto; margin: 1rem 0 0; padding: .8rem;
     border: 1px solid var(--line); border-radius: .5rem; background: var(--card);
