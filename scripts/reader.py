@@ -412,6 +412,10 @@ def render(work,output,translation,mode):
     reference_index,reference_numbers=structure_references(dom)
     add_reference_links(dom,reference_numbers)
     link_citations(dom,reference_index)
+    for node in dom.select('p, li'):
+        text=node.get_text(' ',strip=True)
+        if re.search(r'https?://|[\w.+-]+@[\w-]+\.[\w.]+',text):
+            node['class']=(node.get('class') or [])+['plain']
     label_captions(dom)
     gather_captions(dom)
     plates=place_figures(dom)
@@ -446,31 +450,33 @@ def render(work,output,translation,mode):
 <body id="top" class="no-js" data-mode="{mode if bilingual else 'en'}">
 <input class="switch" type="checkbox" id="outline-switch" checked>
 <input class="switch" type="checkbox" id="rail-switch" checked>
-<input class="switch" type="radio" name="reading-size" id="size-0" checked>
+<input class="switch" type="radio" name="reading-size" id="size-0">
 <input class="switch" type="radio" name="reading-size" id="size-1">
 <input class="switch" type="radio" name="reading-size" id="size-2">
-<input class="switch" type="radio" name="reading-size" id="size-3">
+<input class="switch" type="radio" name="reading-size" id="size-3" checked>
 <input class="switch" type="radio" name="reading-size" id="size-4">
+<input class="switch" type="radio" name="reading-size" id="size-5">
+<input class="switch" type="radio" name="reading-size" id="size-6">
 <input class="switch" type="radio" name="rail-width" id="rail-w-0">
 <input class="switch" type="radio" name="rail-width" id="rail-w-1" checked>
 <input class="switch" type="radio" name="rail-width" id="rail-w-2">
-<input class="switch" type="radio" name="rail-width" id="rail-w-3">
 <div class="app">
 <header class="topbar">
 <label class="ctrl" for="outline-switch" title="收起或展开目录"><span aria-hidden="true">☰</span> 目录</label>
 <span class="grow"></span>
 <div class="fontctl" role="group" aria-label="字号">
 <label class="sz sz-0" for="size-0" title="最小字号">A</label>
-<label class="sz sz-1" for="size-1" title="小字号">A</label>
-<label class="sz sz-2" for="size-2" title="标准字号">A</label>
-<label class="sz sz-3" for="size-3" title="大字号">A</label>
-<label class="sz sz-4" for="size-4" title="最大字号">A</label>
+<label class="sz sz-1" for="size-1" title="很小字号">A</label>
+<label class="sz sz-2" for="size-2" title="较小字号">A</label>
+<label class="sz sz-3" for="size-3" title="标准字号">A</label>
+<label class="sz sz-4" for="size-4" title="稍大字号">A</label>
+<label class="sz sz-5" for="size-5" title="大字号">A</label>
+<label class="sz sz-6" for="size-6" title="最大字号">A</label>
 </div>
 <div class="widthctl" role="group" aria-label="图表栏宽度">
 <label class="w w-0" for="rail-w-0" title="窄">窄</label>
 <label class="w w-1" for="rail-w-1" title="中">中</label>
 <label class="w w-2" for="rail-w-2" title="宽">宽</label>
-<label class="w w-3" for="rail-w-3" title="超宽">超</label>
 </div>
 <label class="ctrl" for="rail-switch" title="收起或展开图表栏"><span aria-hidden="true">◫</span> 图表</label>
 </header>

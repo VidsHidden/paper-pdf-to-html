@@ -19,17 +19,19 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 
 .app {
   --scale: 1; --ow: 15rem; --handle: 0px;
-  --preset-rail: 22rem;
+  --preset-rail: 28rem;
   --rail-w: var(--user-rail, var(--preset-rail));
 }
-#size-1:checked ~ .app { --scale: 1.1; }
-#size-2:checked ~ .app { --scale: 1.21; }
-#size-3:checked ~ .app { --scale: 1.34; }
-#size-4:checked ~ .app { --scale: 1.48; }
-#rail-w-0:checked ~ .app { --preset-rail: 18rem; }
-#rail-w-1:checked ~ .app { --preset-rail: 22rem; }
-#rail-w-2:checked ~ .app { --preset-rail: 28rem; }
-#rail-w-3:checked ~ .app { --preset-rail: 34rem; }
+#size-0:checked ~ .app { --scale: .78; }
+#size-1:checked ~ .app { --scale: .86; }
+#size-2:checked ~ .app { --scale: .94; }
+#size-3:checked ~ .app { --scale: 1; }
+#size-4:checked ~ .app { --scale: 1.1; }
+#size-5:checked ~ .app { --scale: 1.21; }
+#size-6:checked ~ .app { --scale: 1.34; }
+#rail-w-0:checked ~ .app { --preset-rail: 22rem; }
+#rail-w-1:checked ~ .app { --preset-rail: 28rem; }
+#rail-w-2:checked ~ .app { --preset-rail: 34rem; }
 #outline-switch:not(:checked) ~ .app { --ow: 0px; }
 #outline-switch:not(:checked) ~ .app #outline { display: none; }
 #rail-switch:not(:checked) ~ .app { --rail-w: 0px; --handle: 0px; }
@@ -70,23 +72,26 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 .w:hover { background: var(--wash); color: var(--accent); }
 #rail-w-0:checked ~ .app .w-0,
 #rail-w-1:checked ~ .app .w-1,
-#rail-w-2:checked ~ .app .w-2,
-#rail-w-3:checked ~ .app .w-3 { color: var(--accent); font-weight: 800; background: var(--wash); }
+#rail-w-2:checked ~ .app .w-2 { color: var(--accent); font-weight: 800; background: var(--wash); }
 .sz {
   padding: .3rem .42rem; border-radius: .3rem; color: var(--quiet);
   cursor: pointer; line-height: 1; user-select: none;
 }
 .sz:hover { background: var(--wash); color: var(--accent); }
-.sz-0 { font-size: .72rem; }
-.sz-1 { font-size: .8rem; }
-.sz-2 { font-size: .88rem; }
-.sz-3 { font-size: .96rem; }
-.sz-4 { font-size: 1.06rem; }
+.sz-0 { font-size: .6rem; }
+.sz-1 { font-size: .68rem; }
+.sz-2 { font-size: .76rem; }
+.sz-3 { font-size: .86rem; }
+.sz-4 { font-size: .96rem; }
+.sz-5 { font-size: 1.06rem; }
+.sz-6 { font-size: 1.16rem; }
 #size-0:checked ~ .app .sz-0,
 #size-1:checked ~ .app .sz-1,
 #size-2:checked ~ .app .sz-2,
 #size-3:checked ~ .app .sz-3,
-#size-4:checked ~ .app .sz-4 { color: var(--accent); font-weight: 800; }
+#size-4:checked ~ .app .sz-4,
+#size-5:checked ~ .app .sz-5,
+#size-6:checked ~ .app .sz-6 { color: var(--accent); font-weight: 800; }
 
 /* ---------- shell ---------- */
 .shell {
@@ -124,6 +129,12 @@ h2 {
 h3 { font-size: 1.04em; line-height: 1.4; margin: 1.6rem 0 .5rem; }
 h2, h3 { font-family: system-ui, sans-serif; }
 p { margin: .62rem 0 .92rem; }
+article p.plain { text-align: left; }
+article p:not(.meta):not(.authors):not(.translation-note):not(.plain),
+article li, .caption-body p, .ref-entry {
+  text-align: justify; text-justify: inter-ideograph; hyphens: auto;
+  overflow-wrap: anywhere;
+}
 .authors { font: .86em/1.6 system-ui, sans-serif; color: #394645; }
 .meta, figcaption, .refs, .appendix, .caption-body { font-family: system-ui, sans-serif; }
 .meta { font-size: .8em; color: var(--quiet); }
