@@ -348,9 +348,10 @@ def gather_captions(dom):
         figure.append(body)
 
 def place_figures(dom):
-    """Move each plate to the end of the section that first mentions it."""
+    """Leave a slot at the section that first mentions each plate; return the plates."""
     article=dom.select_one('article') or dom
     plates=[tag for tag in article.find_all('figure') if str(tag.get('id','')).startswith(('figure-','table-'))]
+    kept=[]
     for plate in plates:
         identifier=plate['id']
         blocks=[child for child in article.children if isinstance(child,Tag)]
@@ -366,16 +367,18 @@ def place_figures(dom):
                     break
             if position is not None:
                 break
-        slot=dom.new_tag('div',attrs={'class':'fig-slot','id':f'slot-{identifier}','data-fig':identifier})
-        plate.wrap(slot)
         if position is None:
             continue
+        slot=dom.new_tag('div',attrs={'class':'fig-slot','id':f'slot-{identifier}','data-fig':identifier})
         following=[child for child in article.children if isinstance(child,Tag)][position+1:]
         heading=next((child for child in following if re.fullmatch(r'h[2-6]',child.name or '')),None)
         if heading is None:
             article.append(slot)
         else:
             heading.insert_before(slot)
+        plate.extract()
+        kept.append(plate)
+    return kept
 
 def render(work,output,translation,mode):
     dom=article_dom(work)
@@ -411,7 +414,8 @@ def render(work,output,translation,mode):
     link_citations(dom,reference_index)
     label_captions(dom)
     gather_captions(dom)
-    place_figures(dom)
+    plates=place_figures(dom)
+    rail=''.join(str(plate) for plate in plates)
     labels=[]
     for heading in headings:
         translated=heading.select_one('.translation-text')
@@ -437,23 +441,35 @@ def render(work,output,translation,mode):
     css=(ASSETS/'reader.css').read_text()
     js=(ASSETS/'reader.js').read_text()
     result=f'''<!doctype html>
-<html lang="{lang}" data-font="0"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title><style>{css}</style></head>
-<body id="top" class="no-js" data-mode="{mode if bilingual else 'en'}" data-outline="open" data-rail="open">
+<body id="top" class="no-js" data-mode="{mode if bilingual else 'en'}">
+<input class="switch" type="checkbox" id="outline-switch" checked>
+<input class="switch" type="checkbox" id="rail-switch" checked>
+<input class="switch" type="radio" name="reading-size" id="size-0" checked>
+<input class="switch" type="radio" name="reading-size" id="size-1">
+<input class="switch" type="radio" name="reading-size" id="size-2">
+<input class="switch" type="radio" name="reading-size" id="size-3">
+<input class="switch" type="radio" name="reading-size" id="size-4">
+<div class="app">
 <header class="topbar">
-<button class="ctrl" id="outline-toggle" type="button" aria-expanded="true" aria-controls="outline"><span aria-hidden="true">☰</span> 目录</button>
+<label class="ctrl" for="outline-switch" title="收起或展开目录"><span aria-hidden="true">☰</span> 目录</label>
 <span class="grow"></span>
 <div class="fontctl" role="group" aria-label="字号">
-<button class="ctrl" type="button" data-step="-1" aria-label="减小字号">A−</button>
-<button class="ctrl" type="button" data-step="1" aria-label="增大字号">A+</button>
+<label class="sz sz-0" for="size-0" title="最小字号">A</label>
+<label class="sz sz-1" for="size-1" title="小字号">A</label>
+<label class="sz sz-2" for="size-2" title="标准字号">A</label>
+<label class="sz sz-3" for="size-3" title="大字号">A</label>
+<label class="sz sz-4" for="size-4" title="最大字号">A</label>
 </div>
-<button class="ctrl" id="rail-toggle" type="button" aria-expanded="true" aria-controls="rail"><span aria-hidden="true">◫</span> 图表</button>
+<label class="ctrl" for="rail-switch" title="收起或展开图表栏"><span aria-hidden="true">◫</span> 图表</label>
 </header>
 <div class="shell">
 <nav id="outline" aria-label="Contents">{nav}</nav>
 <main><article>{dom}</article></main>
 <div class="rail-resizer" id="rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整图表栏宽度" tabindex="0"></div>
-<aside id="rail" aria-label="Figures and tables" hidden></aside>
+<aside id="rail" aria-label="Figures and tables">{rail}</aside>
+</div>
 </div>
 <div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
 <dialog aria-label="Enlarged figure"><button class="close" type="button">Close ×</button><div class="enlarged"></div></dialog>
