@@ -139,6 +139,8 @@ document.addEventListener('click', event => {
   if (!figure) return;
   if (rail && rail.contains(figure) && docked()) {
     event.preventDefault();
+    const tab = document.getElementById('fig-view-' + plates.indexOf(figure));
+    if (tab && !tab.checked) tab.checked = true;
     figure.scrollIntoView({ block: 'start', behavior: 'smooth' });
     flash(figure);
   } else if (docked()) {

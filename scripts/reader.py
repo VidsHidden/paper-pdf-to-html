@@ -23,6 +23,8 @@ ASSETS=Path(__file__).resolve().parents[1]/'assets'
 NODES='header h1,h2,h3,h4,h5,h6,p,figcaption,th,td,li'
 TECH=re.compile(r'(?<![A-Za-z0-9])(?:\d+(?:[.,]\d+)*(?:[–-]\d+(?:\.\d+)?)?\s*(?:°C|[μµnmp]?[lLgMsV]|nm|μm|µm|kDa|rpm|mmHg|h|min|%)\b|\d+(?:\.\d+)?\s*%|[⁰¹²³⁴⁵⁶⁷⁸⁹]+[A-Z]|[A-Za-z][A-Za-z0-9_]*(?<=\d)[A-Za-z0-9_]*)(?![A-Za-z0-9\]])')
 FIG=re.compile(r'(?:(Extended\s+Data|Supplementary|Supporting|扩展数据|补充)\s*)?(Fig(?:ure)?\.?|Table|图|表)\s*([A-Z]?\d+)([a-z]?)',re.I)
+PANEL=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
+LEGEND=re.compile(r'^(?:[（(]?图例续下页[)）]?|[(（]?legend continued|see also (?:figure|table|fig\.))',re.I)
 CAPTION_TITLE={
   'abstract':'摘要','introduction':'引言','methods':'方法','materials and methods':'材料与方法',
   'results':'结果','discussion':'讨论','conclusions':'结论','conclusion':'结论',
@@ -242,32 +244,70 @@ def link_citations(dom,index):
             text.replace_with(*list(BeautifulSoup(''.join(pieces),'html.parser').contents))
 
 def label_captions(dom):
+    """Bold the leading figure or table label inside each language span."""
+    pattern=re.compile(r'\s*(?:Figure|Fig\.?|Table|图|表)\s*[A-Z]?\d+[a-z]?(?:\.|。)?\s*',re.I)
     for figure in dom.select('figure'):
         caption=figure.select_one('figcaption')
-        if not caption:
+        if caption is None:
             continue
-        first=next((c for c in caption.children if isinstance(c,NavigableString) and str(c).strip()),None)
-        if first is None:
+        targets=[tag for tag in (caption.select_one('.source-text'),caption.select_one('.translation-text')) if tag] or [caption]
+        for target in targets:
+            lead=next((child for child in target.children
+                       if (isinstance(child,NavigableString) and str(child).strip())
+                       or getattr(child,'name',None)=='a'),None)
+            if lead is None:
+                continue
+            if getattr(lead,'name',None)=='a':
+                text=lead.get_text()
+                match=pattern.fullmatch(text)
+                if not match:
+                    continue
+                label=dom.new_tag('span',attrs={'class':'caption-label'})
+                label.string=text.strip()
+                lead.replace_with(label)
+                continue
+            value=str(lead)
+            match=pattern.match(value)
+            if not match:
+                continue
+            label=dom.new_tag('span',attrs={'class':'caption-label'})
+            label.string=match.group().strip()
+            lead.replace_with(label,NavigableString(value[match.end():]))
+
+def fold_caption(dom,figure):
+    """Keep the label and headline visible, fold the panel detail away."""
+    caption=figure.select_one('figcaption')
+    if caption is None or len(caption.get_text(' ',strip=True))<=180:
+        return
+    marker=re.compile(r'[(（]\s*[A-Z]\b')
+    spans=[tag for tag in (caption.select_one('.source-text'),caption.select_one('.translation-text')) if tag] or [caption]
+    for span in spans:
+        label=span.select_one('.caption-label')
+        if label is None:
             continue
-        value=str(first)
-        match=re.match(r'\s*(?:Figure|Fig\.?|Table|图|表)\s*[A-Z]?\d+[a-z]?(?:\.|。)?\s*',value,re.I)
-        if not match:
+        children=list(span.contents)
+        head=children.index(label)+1
+        for index in range(head,len(children)):
+            child=children[index]
+            if not isinstance(child,NavigableString):
+                break
+            text=str(child)
+            found=marker.search(text)
+            if found and found.start()>0:
+                child.replace_with(NavigableString(text[:found.start()]),NavigableString(text[found.start():]))
+                children=list(span.contents)
+                head=children.index(label)+1
+                break
+        moving=[child for child in children[head+1:]]
+        if not moving:
             continue
-        label=dom.new_tag('span',attrs={'class':'caption-label'})
-        label.string=match.group().strip()
-        first.replace_with(label, NavigableString(value[match.end():]))
-
-PANEL=re.compile(r'^\s*[（(]\s*[A-Z]\s*(?:[–\-—]\s*[A-Z])?\s*[)）]')
-LEGEND=re.compile(r'^(?:[（(]?图例续下页[)）]?|[(（]?legend continued|see also (?:figure|table|fig\.))',re.I)
-
-LEGEND_TEXT=re.compile(r'\s*\(legend continued on next page\)\s*|\s*（图例续下页）\s*')
-
-def strip_legend(node):
-    for text in list(node.find_all(string=True)):
-        value=str(text)
-        cleaned=LEGEND_TEXT.sub(' ',value)
-        if cleaned!=value:
-            text.replace_with(NavigableString(cleaned))
+        details=dom.new_tag('details',attrs={'class':'caption-more'})
+        summary=dom.new_tag('summary')
+        summary.string='展开完整图注' if 'translation-text' in (span.get('class') or []) else 'Show full legend'
+        details.append(summary)
+        for child in moving:
+            details.append(child.extract())
+        span.append(details)
 
 def gather_captions(dom):
     """Pull the legend paragraphs that trail a figure into that figure."""
@@ -416,10 +456,26 @@ def render(work,output,translation,mode):
         text=node.get_text(' ',strip=True)
         if re.search(r'https?://|[\w.+-]+@[\w-]+\.[\w.]+',text):
             node['class']=(node.get('class') or [])+['plain']
-    label_captions(dom)
     gather_captions(dom)
+    label_captions(dom)
     plates=place_figures(dom)
+    # One plate at a time, with long legends folded, keeps the rail short
+    # enough to survive embedded readers where a viewport cap is unreliable.
+    for plate in plates:
+        fold_caption(dom,plate)
     rail=''.join(str(plate) for plate in plates)
+    gallery=[]
+    for index,plate in enumerate(plates):
+        kind='表' if str(plate.get('id','')).startswith('table-') else '图'
+        gallery.append(f'<label class="ftab" for="fig-view-{index}">{kind}{index+1}</label>')
+    tabs='<div class="fgallery" role="group" aria-label="图表切换">'+''.join(gallery)+(
+        '<label class="ftab ftab-all" for="fig-view-all">全部</label>' if len(plates)>1 else '')+'</div>'
+    switches=''.join(f'<input class="switch" type="radio" name="fig-view" id="fig-view-{index}"'
+                     +(' checked' if index==0 else '')+'>' for index in range(len(plates)))
+    switches+='<input class="switch" type="radio" name="fig-view" id="fig-view-all">'
+    gallery_css='<style>#rail figure{display:none}'+''.join(
+        f'#fig-view-{index}:checked ~ .app #rail figure:nth-of-type({index+1}){{display:block}}'
+        for index in range(len(plates)))+'#fig-view-all:checked ~ .app #rail figure{display:block}</style>'
     labels=[]
     for heading in headings:
         translated=heading.select_one('.translation-text')
@@ -446,7 +502,7 @@ def render(work,output,translation,mode):
     js=(ASSETS/'reader.js').read_text()
     result=f'''<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(title)}</title><style>{css}</style></head>
+<title>{escape(title)}</title><style>{css}</style>{gallery_css}</head>
 <body id="top" class="no-js" data-mode="{mode if bilingual else 'en'}">
 <input class="switch" type="checkbox" id="outline-switch" checked>
 <input class="switch" type="checkbox" id="rail-switch" checked>
@@ -460,6 +516,7 @@ def render(work,output,translation,mode):
 <input class="switch" type="radio" name="rail-size" id="rail-size-1" checked>
 <input class="switch" type="radio" name="rail-size" id="rail-size-2">
 <input class="switch" type="radio" name="rail-size" id="rail-size-3">
+{switches}
 <div class="app">
 <header class="topbar">
 <label class="ctrl" for="outline-switch" title="收起或展开目录"><span aria-hidden="true">☰</span> 目录</label>
@@ -480,7 +537,7 @@ def render(work,output,translation,mode):
 <nav id="outline" aria-label="Contents">{nav}</nav>
 <main><article>{dom}</article></main>
 <div class="rail-resizer" id="rail-resizer" role="separator" aria-orientation="vertical" aria-label="调整图表栏宽度" tabindex="0"></div>
-<aside id="rail" aria-label="Figures and tables"><div class="rail-head"><span>图表 · FIGURES</span><div class="rail-size" role="group" aria-label="图表字号"><label class="rs-0" for="rail-size-0" title="图表字号：小">A</label><label class="rs-1" for="rail-size-1" title="图表字号：中">A</label><label class="rs-2" for="rail-size-2" title="图表字号：大">A</label><label class="rs-3" for="rail-size-3" title="图表字号：特大">A</label></div></div>{rail}</aside>
+<aside id="rail" aria-label="Figures and tables"><div class="rail-head"><span>图表 · FIGURES</span><div class="rail-size" role="group" aria-label="图表字号"><label class="rs-0" for="rail-size-0" title="图表字号：小">A</label><label class="rs-1" for="rail-size-1" title="图表字号：中">A</label><label class="rs-2" for="rail-size-2" title="图表字号：大">A</label><label class="rs-3" for="rail-size-3" title="图表字号：特大">A</label></div></div>{tabs}{rail}</aside>
 </div>
 </div>
 <div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
