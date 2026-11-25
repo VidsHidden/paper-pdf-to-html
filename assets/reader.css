@@ -207,7 +207,7 @@ a.figref { color: var(--accent); font-weight: 600; }
 #rail::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 /* embedded readers can report a taller viewport than they show; keep a
    little more margin there instead of shortening the browser layout */
-body.no-js #rail { max-height: calc(100vh - 5rem); }
+body.no-js #rail { max-height: 80vh; }
 #rail:empty { display: none; }
 .rail-head {
   position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: .5rem;
