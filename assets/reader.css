@@ -166,6 +166,8 @@ body[data-mode="both"] h2 > .translation-text, body[data-mode="both"] h3 > .tran
 figure {
   margin: 1.35rem 0 1.6rem; padding: .55rem; border: 1px solid var(--line);
   border-radius: .45rem; background: var(--card);
+  /* captions keep their own scale even when the plate sits inside the article */
+  font-size: calc(.95rem * var(--rail-scale));
 }
 figure img { max-width: 100%; max-height: 78vh; width: auto; height: auto; display: block; margin: 0 auto; }
 figcaption {
