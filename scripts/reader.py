@@ -546,7 +546,12 @@ def cli():
             if args.command=='convert' and args.output.resolve()==args.pdf.resolve():
                 raise ValueError('The HTML output cannot replace the source PDF.')
             audit=extract(args.pdf,args.work,ocr=args.ocr,language=args.ocr_language,facade=selected_pages(args.facsimile))
+            unfinished=[c for c in audit.get('caption_audit',[]) if not c['clean_end']]
             print(f'Parsed {len(audit["pages"])} pages; visuals: {audit["counts"]}; unmatched captions: {len(audit["unmatched_captions"])}',flush=True)
+            if audit.get('caption_strategy')=='labels-only':
+                print('Caption type sizes unavailable (scanned pages); legends stay label-anchored.',flush=True)
+            if unfinished:
+                print('Captions without a closing sentence: '+', '.join(c['label'] for c in unfinished),flush=True)
             rows=prepare_job(args.work)
         if needs_translation:
             if args.command=='translate':

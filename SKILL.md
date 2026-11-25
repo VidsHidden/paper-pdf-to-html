@@ -24,6 +24,6 @@ description: Convert an uploaded or local academic PDF into a single offline HTM
 
 ## 检查成品
 
-1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。
+1. 查看 `WORKDIR/extraction.json`，核对页数、图表、公式和未匹配图注。`caption_audit` 列出每条图注的字数和是否以句末标点收尾；`clean_end` 为 false 的说明图注被分页截断，先看能不能补齐，补不上就对该页用 `--facsimile`。`caption_strategy` 为 `labels-only` 表示扫描件没有字号信息，图注只能按图号锚定。对照 PDF 检查首页、双栏顺序、跨页句子、图注归属、公式与补充页。检查用户关心的版面和关键数值。图是矢量图时，确认整版图四角完整、没有出版社水印、没有孤立的小图残片。发现错配时在中间稿修正，或者保留该页原图并说明。
 2. 翻译时通读标题、摘要和关键结论。检查专名、同位素、单位、数值和引文。保留作者表述的确定程度，标明机器译文的校订范围。结构化参考文献原样保留。
 3. 运行 `uv run <skill>/scripts/reader.py verify OUTPUT.html`，用浏览器点验目录、语言切换和图片放大。最终只交付 HTML，说明实际采用的回退和校订范围。

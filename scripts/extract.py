@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 import json
 import re
+import statistics
 
 from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
@@ -25,6 +26,7 @@ class Box:
     text: str
     label: str = ''
     used: bool = False
+    size: float = 0.0
 
 def clean_html(value):
     dom = BeautifulSoup(MD.render(value), 'html.parser')
@@ -80,6 +82,32 @@ def by_columns(boxes, width):
         pending=[b for b in pending if b not in band]
     return result+column_sort(pending)
 
+def block_font_size(page, rect):
+    """Median text size of the spans that fill this block."""
+    sizes=[]
+    for block in page.get_text('dict')['blocks']:
+        if block.get('type')!=0:
+            continue
+        for line in block['lines']:
+            for span in line['spans']:
+                box=pymupdf.Rect(span['bbox'])
+                if box.is_empty:
+                    continue
+                overlap=box&rect
+                if overlap.is_empty or overlap.get_area()<.4*box.get_area():
+                    continue
+                sizes.append(round(span['size'],1))
+    return statistics.median(sizes) if sizes else 0.0
+
+def body_font_size(page_boxes):
+    """Most common size among long prose blocks; legends are set smaller."""
+    sizes=[]
+    for group in page_boxes.values():
+        for box in group:
+            if box.kind in ('text','list-item') and box.size and len(box.text)>200:
+                sizes.extend([box.size]*min(len(box.text),1200))
+    return statistics.median(sizes) if sizes else 0.0
+
 def parse_pages(doc, pages, ocr, language):
     chunks=pymupdf4llm.to_markdown(doc,pages=pages,page_chunks=True, header=False, footer=False,
         use_ocr=ocr!='off',force_ocr=ocr=='force',ocr_language=language,table_output='html',force_text=False)
@@ -96,7 +124,9 @@ def parse_pages(doc, pages, ocr, language):
             if kind not in VISUAL and not text:
                 continue
             m=LABEL.match(text)
-            result[number].append(Box(number,kind,pymupdf.Rect(info['bbox']),html,text,key_for(m) if m else ''))
+            rect=pymupdf.Rect(info['bbox'])
+            result[number].append(Box(number,kind,rect,html,text,key_for(m) if m else '',
+                                      False,block_font_size(doc[number],rect)))
         # Some title pages have authors and editorial dates aligned as a faux table.
         for box in result[number]:
             if number==0 and box.kind=='table' and re.search(r'\breceived\b.*\baccepted\b',box.text,re.I|re.S):
@@ -105,6 +135,12 @@ def parse_pages(doc, pages, ocr, language):
                     box.kind='text'
                     box.html=''.join('<p>'+escape(c.get_text(' ',strip=True))+'</p>' for c in cells if c.get_text(strip=True))
     return result
+
+def caption_text(group):
+    """Join caption blocks and drop the publisher's page-break marker."""
+    text=' '.join(simple_inline(box.html) for box in group)
+    text=LEGEND_MARK.sub(' ',text)
+    return re.sub(r'\s+',' ',text).strip()
 
 def simple_inline(html):
     return re.sub(r'^<(?:p|h[1-6])>|</(?:p|h[1-6])>$','',html.strip()).strip()
@@ -144,6 +180,54 @@ def caption_groups(page_boxes):
                     for b in continuation+related:
                         b.used=False
     return captions
+
+LEGEND_MARK=re.compile(r'\(legend continued on next page\)|（图例续下页）|\(continued on next page\)|\(continued\)',re.I)
+TERMINAL=re.compile(r'[.!?。！？]\s*$')
+
+def attach_legend(captions, page_boxes, body):
+    """Grow each caption with the smaller-set type that belongs to it.
+
+    Legend type is set below body size, which separates multi-paragraph and
+    page-break tails from ordinary prose far more reliably than adjacency.
+    """
+    if not captions or not body:
+        return
+    for boxes in page_boxes.values():
+        for index,box in enumerate(boxes):
+            group=captions.get(box.label) if box.label else None
+            if not group or group[0] is not box:
+                continue
+            for follower in boxes[index+1:]:
+                if follower.used or follower.label or follower.kind in VISUAL or follower.kind=='table':
+                    break
+                if not follower.size or follower.size>body-.25:
+                    break
+                follower.used=True
+                group.append(follower)
+    open_labels={label for label,group in captions.items()
+                 if group and LEGEND_MARK.search(group[-1].text)}
+    if not open_labels:
+        return
+    orphans=[box for group in page_boxes.values() for box in group
+             if not box.used and not box.label and box.size and box.size<body-.25
+             and box.kind in ('text','caption','list-item')]
+    taken={}
+    for orphan in sorted(orphans,key=lambda b:(b.page,b.rect.y0,b.rect.x0)):
+        candidates=[(label,group) for label,group in captions.items()
+                    if label in open_labels and group[0].page<=orphan.page<=group[0].page+2]
+        if not candidates:
+            continue
+        label,group=max(candidates,key=lambda item:(item[1][0].page,item[1][0].rect.y0))
+        if any(item is orphan for item in group):
+            continue
+        # The first tail may continue a sentence; anything after it must open a
+        # new panel. That keeps method notes and reference lists out.
+        pattern=r'^\s*[(（]' if taken.get(label,0) else r'^\s*[a-z(（]'
+        if not re.match(pattern,orphan.text):
+            continue
+        orphan.used=True
+        group.append(orphan)
+        taken[label]=taken.get(label,0)+1
 
 def distances(caption, visual):
     pages=visual.page-caption.page
@@ -245,7 +329,9 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
         pages=[i for i in range(len(doc)) if i+1 not in facade]
         boxes=parse_pages(doc,pages,ocr,language) if pages else {}
         crop_large_figures(doc,boxes)
+        body=body_font_size(boxes)
         captions=caption_groups(boxes)
+        attach_legend(captions,boxes,body)
         pictures=[b for group in boxes.values() for b in group if b.kind=='picture' and not b.used]
         tables=[b for group in boxes.values() for b in group if b.kind=='table' and not b.used]
         assigned={}
@@ -291,7 +377,7 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
                 if paired:
                     label, cap=paired
                     identifier=re.sub(r'[^a-z0-9]+','-',label.strip().casefold())
-                    caption='<figcaption data-pdf-page="'+str(cap[0].page+1)+'">'+' '.join(simple_inline(x.html) for x in cap)+'</figcaption>'
+                    caption='<figcaption data-pdf-page="'+str(cap[0].page+1)+'">'+caption_text(cap)+'</figcaption>'
                 if b.kind in VISUAL:
                     counts[b.kind]+=1
                     alt=paired[0].title() if paired else f'{b.kind.title()} on PDF page {number}'
@@ -318,6 +404,12 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
             html.extend(content)
             report['pages'].append({'page':number,'extracted_blocks':len(group),'facsimile':preserved})
         report['counts']=counts
+        report['body_font_size']=body
+        report['caption_strategy']='font-size' if body else 'labels-only'
+        report['caption_audit']=[{'label':label,'page':cap[0].page+1,'chars':len(clean),
+                                  'clean_end':bool(TERMINAL.search(clean))}
+                                 for label,cap in captions.items()
+                                 for clean in [BeautifulSoup(caption_text(cap),'html.parser').get_text(' ',strip=True)]]
         report['paired_captions']=[{'label':label,'caption_page':cap[0].page+1,'asset_page':b.page+1}
             for b in pictures+tables if (pair:=assigned.get(id(b))) for label,cap in [pair]]
     out.mkdir(parents=True,exist_ok=True)
