@@ -15,7 +15,13 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 [lang="zh-Hans"] { font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif; }
 
 /* ---------- CSS-only switches ---------- */
-.switch { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+/* keep the inputs inside the viewport: focusing an off-screen control would
+   scroll the page back to the top */
+.switch {
+  position: fixed; top: 0; inset-inline-start: 0; width: 1px; height: 1px;
+  margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none;
+  clip-path: inset(50%); -webkit-appearance: none; appearance: none;
+}
 
 .app {
   --scale: 1; --rail-scale: 1; --ow: 15rem; --handle: 0px;
@@ -188,14 +194,6 @@ a.figref { color: var(--accent); font-weight: 600; }
   scrollbar-gutter: stable;
   padding: 0 0 2rem clamp(.9rem, 1.4vw, 1.6rem);
   font-size: calc(.95rem * var(--rail-scale));
-}
-/* a soft fade at the scrollport edge hints that more plates follow.
-   Only with scripts: without them the rail may not be its own scrollport,
-   and a sticky overlay would cut through the text. */
-body.js #rail::after {
-  content: ""; position: sticky; bottom: -.4rem; display: block;
-  height: 2.4rem; margin-top: -2.4rem; pointer-events: none;
-  background: linear-gradient(to bottom, rgba(251, 252, 251, 0), var(--bg) 72%);
 }
 #rail::-webkit-scrollbar { width: 11px; }
 #rail::-webkit-scrollbar-track { background: var(--wash); border-radius: 6px; }
