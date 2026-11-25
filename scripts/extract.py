@@ -290,7 +290,7 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
                 identifier=''
                 if paired:
                     label, cap=paired
-                    identifier='figure-'+re.sub(r'[^a-z0-9]+','-',label)
+                    identifier=re.sub(r'[^a-z0-9]+','-',label.strip().casefold())
                     caption='<figcaption data-pdf-page="'+str(cap[0].page+1)+'">'+' '.join(simple_inline(x.html) for x in cap)+'</figcaption>'
                 if b.kind in VISUAL:
                     counts[b.kind]+=1
@@ -309,7 +309,7 @@ def extract(pdf, out, *, ocr='auto', language='eng', facade=()):
             for label, cap in captions.items():
                 if cap[0].page==page and label not in {a[0] for a in assigned.values()}:
                     report['unmatched_captions'].append({'label':label,'page':number})
-                    content.append('<figure id="figure-'+re.sub(r'[^a-z0-9]+','-',label)+'"><figcaption>'
+                    content.append('<figure id="'+re.sub(r'[^a-z0-9]+','-',label.strip().casefold())+'"><figcaption>'
                                    +' '.join(simple_inline(x.html) for x in cap)+'</figcaption></figure>')
             preserved=number in facade or not (content or group)
             if preserved:

@@ -34,7 +34,7 @@ def fig_id(match):
     prefixes={'扩展数据':'extended data','补充':'supplementary'}
     prefix=prefixes.get(prefix,prefix)
     kind='table' if kind.casefold() in ('table','表') else 'figure'
-    return 'figure-'+ '-'.join(x.lower().replace(' ','-') for x in (prefix,kind,number) if x)
+    return '-'.join(x.lower().replace(' ','-') for x in (prefix,kind,number) if x)
 
 def link_in_prose(text, ids):
     output=[]
@@ -44,7 +44,7 @@ def link_in_prose(text, ids):
         if anchor not in ids:
             continue
         output.append(escape(text[last:match.start()]))
-        output.append(f'<a href="#{anchor}">{escape(match.group())}</a>')
+        output.append(f'<a class="figref" href="#{anchor}">{escape(match.group())}</a>')
         last=match.end()
     return ''.join(output)+escape(text[last:])
 
@@ -128,20 +128,8 @@ def add_links(dom, ids):
             if '<a ' in html:
                 node.replace_with(*list(BeautifulSoup(html,'html.parser').contents))
 
-def add_reference_links(dom):
-    ref_numbers={}
-    in_refs=False
-    for node in dom.find_all(['h2','h3','h4','h5','h6','ol']):
-        if node.name.startswith('h'):
-            label=node.select_one('.source-text') or node
-            in_refs=label.get_text(' ',strip=True).lower() in ('references','bibliography','literature cited')
-        elif in_refs:
-            start=int(node.get('start',1))
-            for n,item in enumerate(node.find_all('li',recursive=False),start):
-                if n not in ref_numbers:
-                    ref_numbers[n]=f'ref-{n}'
-                    item['id']=ref_numbers[n]
-    if not ref_numbers:
+def add_reference_links(dom,numbers):
+    if not numbers:
         return
     for sup in dom.select('p sup,figcaption sup'):
         text=sup.get_text()
@@ -151,11 +139,153 @@ def add_reference_links(dom):
         if not re.fullmatch(r'[\d,–\- ]+',text) or sup.find('a'):
             continue
         def link(m):
-            target=ref_numbers.get(int(m[0]))
-            return f'<a class="ref" href="#{target}">{m[0]}</a>' if target else m[0]
+            target=numbers.get(int(m[0]))
+            return f'<a class="cite" href="#{target}">{m[0]}</a>' if target else m[0]
         content=re.sub(r'\d+',link,text)
         sup.clear()
         sup.extend(BeautifulSoup(content,'html.parser').contents)
+
+REF_TITLES={'references','bibliography','literature cited','参考文献'}
+REF_START=re.compile(r'(?<=[.;])\s+(?=[A-Z][A-Za-zÀ-ÿ\'’\-]+,\s+[A-Z]\.)')
+REF_YEAR=re.compile(r'\((?:19|20)\d{2}[a-z]?\)')
+REF_SURNAME=re.compile(r'([A-Z][A-Za-zÀ-ÿ\'’\-]+),\s+[A-Z]\.')
+CITE=re.compile(r'([A-Z][A-Za-zÀ-ÿ\'’\-]+(?:\s+(?:et\s+al\.|and\s+[A-Z][A-Za-zÀ-ÿ\'’\-]+|&\s*[A-Z][A-Za-zÀ-ÿ\'’\-]+))?[,，]\s*(?:19|20)\d{2}[a-z]?)')
+
+def structure_references(dom):
+    """Split the bibliography into addressable entries keyed by author, year and number."""
+    heading=None
+    for node in dom.find_all(['h2','h3','h4','h5','h6']):
+        label=node.select_one('.source-text') or node
+        if label.get_text(' ',strip=True).lower() in REF_TITLES:
+            heading=node
+            break
+    if heading is None:
+        return {},{}
+    body=[]
+    for sibling in heading.find_next_siblings():
+        if re.fullmatch(r'h[1-6]',sibling.name or ''):
+            break
+        body.append(sibling)
+    entries=[]
+    for node in body:
+        if node.name=='ol':
+            start=int(node.get('start',1))
+            for offset,item in enumerate(node.find_all('li',recursive=False)):
+                entries.append((start+offset,item.get_text(' ',strip=True)))
+        elif node.name=='ul':
+            for item in node.find_all('li',recursive=False):
+                entries.append((None,item.get_text(' ',strip=True)))
+        elif node.name in ('p','li'):
+            for part in REF_START.split(node.get_text(' ',strip=True)):
+                if part.strip():
+                    entries.append((None,part))
+    entries=[(number,re.sub(r'\s+',' ',text).strip()) for number,text in entries if text.strip()]
+    if not entries:
+        return {},{}
+    for node in body:
+        node.extract()
+    index={}
+    numbers={}
+    used=set()
+    for position,(number,entry) in enumerate(entries,1):
+        surnames=REF_SURNAME.findall(entry)
+        year=REF_YEAR.search(entry)
+        slug='-'.join(x for x in ((surnames[0].lower() if surnames else ''),
+                                  (year.group()[1:5] if year else '')) if x) or str(position)
+        slug=re.sub(r'[^a-z0-9-]+','-',slug)
+        base=slug
+        n=1
+        while slug in used:
+            n+=1
+            slug=f'{base}-{n}'
+        used.add(slug)
+        anchor=f'ref-{slug}'
+        node=dom.new_tag('p',attrs={'class':'ref-entry','id':anchor})
+        node.string=entry
+        heading.insert_before(node)
+        if number is not None:
+            numbers[number]=anchor
+        if surnames:
+            index.setdefault(surnames[0].lower(),anchor)
+        if year:
+            for surname in surnames[:2]:
+                index.setdefault(f'{surname.lower()}-{year.group()[1:5]}',anchor)
+    return index,numbers
+
+def link_citations(dom,index):
+    if not index:
+        return
+    for node in dom.select('p,li,figcaption'):
+        if node.find_parent('p') or node.select_one('.ref-entry'):
+            continue
+        for text in list(node.find_all(string=True)):
+            if text.find_parent(['a','sup','code']) or text.find_parent('p',class_='ref-entry'):
+                continue
+            value=str(text)
+            if not CITE.search(value):
+                continue
+            pieces=[]; last=0
+            for match in CITE.finditer(value):
+                phrase=match.group(1)
+                surname=re.split(r'[\s,，]',phrase,1)[0].strip()
+                year=re.search(r'(?:19|20)\d{2}',phrase)
+                target=index.get(f'{surname.lower()}-{year.group()}') if year else None
+                target=target or index.get(surname.lower())
+                if not target:
+                    continue
+                pieces.append(escape(value[last:match.start()]))
+                pieces.append(f'<a class="cite" href="#{target}">{escape(phrase)}</a>')
+                last=match.end()
+            if not pieces:
+                continue
+            pieces.append(escape(value[last:]))
+            text.replace_with(*list(BeautifulSoup(''.join(pieces),'html.parser').contents))
+
+def label_captions(dom):
+    for figure in dom.select('figure'):
+        caption=figure.select_one('figcaption')
+        if not caption:
+            continue
+        first=next((c for c in caption.children if isinstance(c,NavigableString) and str(c).strip()),None)
+        if first is None:
+            continue
+        value=str(first)
+        match=re.match(r'\s*(?:Figure|Fig\.?|Table|图|表)\s*[A-Z]?\d+[a-z]?(?:\.|。)?\s*',value,re.I)
+        if not match:
+            continue
+        label=dom.new_tag('span',attrs={'class':'caption-label'})
+        label.string=match.group().strip()
+        first.replace_with(label, NavigableString(value[match.end():]))
+
+def place_figures(dom):
+    """Move each plate to the end of the section that first mentions it."""
+    article=dom.select_one('article') or dom
+    plates=[tag for tag in article.find_all('figure') if str(tag.get('id','')).startswith(('figure-','table-'))]
+    for plate in plates:
+        identifier=plate['id']
+        blocks=[child for child in article.children if isinstance(child,Tag)]
+        if plate not in blocks:
+            continue
+        position=None
+        for index,block in enumerate(blocks):
+            if block is plate or block.name in ('figure','h1'):
+                continue
+            for match in FIG.finditer(block.get_text(' ',strip=True)):
+                if fig_id(match)==identifier:
+                    position=index
+                    break
+            if position is not None:
+                break
+        slot=dom.new_tag('div',attrs={'class':'fig-slot','id':f'slot-{identifier}','data-fig':identifier})
+        plate.wrap(slot)
+        if position is None:
+            continue
+        following=[child for child in article.children if isinstance(child,Tag)][position+1:]
+        heading=next((child for child in following if re.fullmatch(r'h[2-6]',child.name or '')),None)
+        if heading is None:
+            article.append(slot)
+        else:
+            heading.insert_before(slot)
 
 def render(work,output,translation,mode):
     dom=article_dom(work)
@@ -186,7 +316,11 @@ def render(work,output,translation,mode):
                 value=translations.get(row['id'],'')
             split_pair(dom,row['node'],target_html(row,value,anchor_ids))
     add_links(dom,anchor_ids)
-    add_reference_links(dom)
+    reference_index,reference_numbers=structure_references(dom)
+    add_reference_links(dom,reference_numbers)
+    link_citations(dom,reference_index)
+    label_captions(dom)
+    place_figures(dom)
     labels=[]
     for heading in headings:
         translated=heading.select_one('.translation-text')
@@ -212,10 +346,24 @@ def render(work,output,translation,mode):
     css=(ASSETS/'reader.css').read_text()
     js=(ASSETS/'reader.js').read_text()
     result=f'''<!doctype html>
-<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="{lang}" data-font="0"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title><style>{css}</style></head>
-<body id="top" data-mode="{mode if bilingual else 'en'}"><div class="shell">
-<nav aria-label="Contents">{nav}</nav><main><article>{dom}</article></main></div>
+<body id="top" class="no-js" data-mode="{mode if bilingual else 'en'}" data-outline="open" data-rail="open">
+<header class="topbar">
+<button class="ctrl" id="outline-toggle" type="button" aria-expanded="true" aria-controls="outline"><span aria-hidden="true">☰</span> 目录</button>
+<span class="grow"></span>
+<div class="fontctl" role="group" aria-label="字号">
+<button class="ctrl" type="button" data-step="-1" aria-label="减小字号">A−</button>
+<button class="ctrl" type="button" data-step="1" aria-label="增大字号">A+</button>
+</div>
+<button class="ctrl" id="rail-toggle" type="button" aria-expanded="true" aria-controls="rail"><span aria-hidden="true">◫</span> 图表</button>
+</header>
+<div class="shell">
+<nav id="outline" aria-label="Contents">{nav}</nav>
+<main><article>{dom}</article></main>
+<aside id="rail" aria-label="Figures and tables" hidden></aside>
+</div>
+<div class="cite-pop" id="cite-pop" role="dialog" aria-label="参考文献" hidden></div>
 <dialog aria-label="Enlarged figure"><button class="close" type="button">Close ×</button><div class="enlarged"></div></dialog>
 <script>{js}</script></body></html>'''
     verify(result)

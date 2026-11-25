@@ -36,6 +36,12 @@ API 模式将标题、摘要、待译文本及术语表发送给配置的服务�
 4. 校订时修改 `translations.json` 对应的中文字符串，保留每个 `[Z1]` 等标记各一次。标记代表公式、链接、上下标或受保护的技术文本。只须提供文本，不要写入 HTML。没有本机翻译组件时，可按 `translation-input.json` 用当前助手逐段写出同样的 JSON，键为 `id`，值为中文字符串。若先修改了中间稿，可再次运行 `prepare` 从 PDF 开始，或以 `translate` 重建输入。自备译文需与当前中间稿一致。
 5. `reader.py render OUTPUT.html --work WORKDIR --mode both --translations WORKDIR/translations.json` 交付双语版。渲染会拒绝缺失译文、丢失标记、重复锚点和失效的页内链接。只需要英文时，省略译文并用 `--mode en`。
 
+## 阅读界面
+
+`render` 输出三栏布局：`#outline` 目录、`main>article` 正文、`#rail` 图表栏。宽于 1180px 时脚本把图表移进右栏，窄于此宽度图表留在原位——由 `place_figures` 放在首次提及它的那一小节末尾，图注随图。正文的「图 1」链接由 `FIG` 正则识别，点击时右栏滚动并高亮；参考文献由 `structure_references` 拆成 `ref-entry` 条目，`link_citations` 把正文里的作者-年份与`<sup>`数字引用接到对应条目，点击弹浮层。字号用 `html[data-font]` 控制五档。
+
+这些交互依赖脚本。Zotero 阅读器等禁用脚本的环境里，图表不移动、浮层不出现，但正文、图表、图注、目录都照常可读，不会丢内容。
+
 默认自动配对使用图号、页面和几何位置。跨页分栏长图注、多面板图、无边框表格和带表单的附页都值得回看。
 
 ## 矢量图整版恢复
