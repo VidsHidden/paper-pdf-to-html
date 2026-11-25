@@ -193,9 +193,11 @@ a.figref { color: var(--accent); font-weight: 600; }
 /* ---------- rail ---------- */
 #rail {
   grid-area: rail; position: sticky; top: var(--topbar);
-  align-self: start; height: auto; max-height: calc(100vh - var(--topbar));
-  overflow-y: auto; overscroll-behavior: contain;
-  scrollbar-width: thin; scrollbar-color: #9fb5ae #eef4f2;
+  align-self: start; height: auto;
+  /* reserve room for a slimmer reader pane than 100vh suggests */
+  max-height: calc(100vh - 6.5rem);
+  overflow-y: scroll; overscroll-behavior: contain;
+  scrollbar-width: auto; scrollbar-color: #8fa8a1 #e6eeeb;
   scrollbar-gutter: stable;
   padding: 0 0 2rem clamp(.9rem, 1.4vw, 1.6rem);
   font-size: calc(.95rem * var(--rail-scale));
