@@ -432,9 +432,22 @@ def join_broken_paragraphs(dom):
             tail=following.get_text(' ',strip=True)
             if terminal.search(head) or not tail or not tail[0].islower():
                 break
-            paragraph.append(NavigableString(' '))
-            for child in list(following.contents):
-                paragraph.append(child.extract())
+            source=paragraph.select_one(':scope > .source-text')
+            target=paragraph.select_one(':scope > .translation-text')
+            next_source=following.select_one(':scope > .source-text')
+            next_target=following.select_one(':scope > .translation-text')
+            if source and target and next_source and next_target:
+                # bilingual blocks carry one pair of spans each; merge per language
+                source.append(NavigableString(' '))
+                target.append(NavigableString(' '))
+                for child in list(next_source.contents):
+                    source.append(child.extract())
+                for child in list(next_target.contents):
+                    target.append(child.extract())
+            else:
+                paragraph.append(NavigableString(' '))
+                for child in list(following.contents):
+                    paragraph.append(child.extract())
             following.decompose()
             following=paragraph.find_next_sibling('p')
 
@@ -581,9 +594,12 @@ def render(work,output,translation,mode):
         text=node.get_text(' ',strip=True)
         if re.search(r'https?://|[\w.+-]+@[\w-]+\.[\w.]+',text):
             node['class']=(node.get('class') or [])+['plain']
-    join_broken_paragraphs(dom)
+    # structural passes rely on plain text blocks; bilingual documents carry
+    # paired spans, so they are left to the review loop instead
+    if not bilingual:
+        join_broken_paragraphs(dom)
+        hoist_front_matter(dom)
     normalize_breaks(dom)
-    hoist_front_matter(dom)
     flatten_fake_tables(dom)
     label_captions(dom)
     gather_captions(dom)
