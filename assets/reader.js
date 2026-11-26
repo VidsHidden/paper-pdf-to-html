@@ -73,7 +73,7 @@ if (resizer) {
     event.preventDefault();
   });
   resizer.addEventListener('pointermove', event => {
-    if (dragging()) setDraggedWidth(window.innerWidth - event.clientX, false);
+    if (dragging()) setDraggedWidth(event.clientX - rail.getBoundingClientRect().left, false);
   });
   const stop = event => {
     if (!dragging()) return;
@@ -90,8 +90,8 @@ if (resizer) {
   });
   resizer.addEventListener('keydown', event => {
     const current = rail ? rail.getBoundingClientRect().width : 352;
-    if (event.key === 'ArrowLeft') { setDraggedWidth(current + 24, true); event.preventDefault(); }
-    if (event.key === 'ArrowRight') { setDraggedWidth(current - 24, true); event.preventDefault(); }
+    if (event.key === 'ArrowLeft') { setDraggedWidth(current - 24, true); event.preventDefault(); }
+    if (event.key === 'ArrowRight') { setDraggedWidth(current + 24, true); event.preventDefault(); }
   });
 }
 

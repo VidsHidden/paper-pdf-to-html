@@ -93,8 +93,8 @@ a, .refs, .meta, .cite { overflow-wrap: anywhere; }
 
 /* ---------- shell ---------- */
 .shell {
-  display: grid; grid-template-columns: var(--ow) minmax(0, 1fr) var(--handle) var(--rail-w);
-  grid-template-areas: "outline main handle rail";
+  display: grid; grid-template-columns: var(--ow) var(--rail-w) var(--handle) minmax(0, 1fr);
+  grid-template-areas: "outline rail handle main";
   column-gap: 0; row-gap: 0;
   max-width: 104rem; margin: 0 auto; padding: 0 clamp(.9rem, 2vw, 2rem) 5rem;
 }
@@ -206,7 +206,7 @@ a.figref { color: var(--accent); font-weight: 600; }
   overflow-y: scroll; overscroll-behavior: contain;
   scrollbar-width: auto; scrollbar-color: #8fa8a1 #e6eeeb;
   scrollbar-gutter: stable;
-  padding: 0 0 2rem clamp(.9rem, 1.4vw, 1.6rem);
+  padding: 0 clamp(.9rem, 1.4vw, 1.6rem) 2rem 0;
   font-size: calc(.95rem * var(--rail-scale));
 }
 #rail::-webkit-scrollbar { width: 11px; }
