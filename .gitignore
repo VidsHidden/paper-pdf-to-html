@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 .env
 .env.*
+/automation/macos/config.json
+/automation/macos/zotero-nightly.log
+/automation/macos/zotero-review-queue/
+/automation/macos/.zotero-*.lock

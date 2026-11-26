@@ -113,9 +113,9 @@ uv run scripts/reader.py verify paper-bilingual.html
 
 ### 接入定时批处理
 
-可在 Zotero 建一个「待处理」分类，再在运行 Zotero 的电脑上配置调度脚本。批处理依次读取分类和子附件，筛出已下载到本机且还没有对应 HTML 的 PDF，按上面的分步流程转换与审校，最后把验收通过的 HTML 作为存储附件写回原论文条目。回写后核对附件归属和文件内容，记录转换或写入失败的条目，便于复查和重试。
+仓库附带 macOS 自动化脚本。每天北京时间 22:30 扫描指定 Zotero 分类，自动转换和审校尚无阅读版的本机 PDF，将通过验收的 HTML 作为存储附件写回原条目。
 
-本仓库提供 PDF 转换器和阅读模板。定时调度及 Zotero 读写由使用方配置，包括 Zotero 访问权限、目标分类和翻译后端。
+参照 [macOS 安装与验收指南](references/zotero-macos.md) 操作。指南包含本机 API 授权、分类配置、前台单篇试跑、LaunchAgent 安装、22:28 唤醒设置、合盖验收及异常重跑。脚本、配置样例和术语库模板在 [automation/macos](automation/macos/)。
 
 ## 更多说明
 
