@@ -101,9 +101,23 @@ uv run scripts/reader.py verify paper-bilingual.html
 
 保留原 PDF、提取参数、校订底稿、最终译文 JSON 和所用的仓库提交。将相同底稿和译文用于再次 `render`，并比较两份 HTML 的文件摘要。依赖已缓存时，可将命令开头改为 `uv run --offline`。这一轮重建直接读取现有译文。
 
-## 项目范围
+## 与 Zotero 配合使用
 
-本仓库提供 Codex 技能、命令行转换器和离线阅读模板。Zotero 定时扫描、审校调度和附件回写需要在使用方的项目中另行配置。
+### 将 HTML 保存为条目附件
+
+1. 在 Zotero 找到原论文条目，将该条目下的 PDF 转成 HTML。
+2. 右键点击原论文条目，选择「添加附件」，再选择「存储文件副本」（英文界面为 **Attach Stored Copy of File**），选中生成的 HTML。
+3. 展开论文条目，确认 PDF 和 HTML 都是该条目的子附件。其他设备需要通过 Zotero 的文件同步获取同一份 HTML。
+
+在浏览器打开附件，可使用拖拽调宽、图片放大等脚本功能。附件如何存储和同步见 [Zotero 官方说明](https://www.zotero.org/support/attaching_files)。
+
+### 接入定时批处理
+
+可在 Zotero 建一个「待处理」分类，再在运行 Zotero 的电脑上配置调度脚本。批处理依次读取分类和子附件，筛出已下载到本机且还没有对应 HTML 的 PDF，按上面的分步流程转换与审校，最后把验收通过的 HTML 作为存储附件写回原论文条目。回写后核对附件归属和文件内容，记录转换或写入失败的条目，便于复查和重试。
+
+本仓库提供 PDF 转换器和阅读模板。定时调度及 Zotero 读写由使用方配置，包括 Zotero 访问权限、目标分类和翻译后端。
+
+## 更多说明
 
 - [完整技能流程](SKILL.md)
 - [运行、审校及回归验证说明](references/operation.md)
