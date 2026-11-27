@@ -9,11 +9,13 @@ import plistlib
 import re
 import runpy
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
 SCRIPT = Path(__file__).resolve()
@@ -24,6 +26,7 @@ AGY = Path.home() / ".local/bin/agy"
 CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
 AGY_MODEL = None
 AGY_EFFORT = None
+PROXY_URL = None
 REVIEW_BACKENDS = []
 QUOTA_BALANCE_TAIL = False
 EXHAUSTED_BACKENDS = set()
@@ -53,7 +56,7 @@ def load_json(file):
 
 
 def configure():
-    global UV, AGY, CODEX, AGY_MODEL, AGY_EFFORT, REVIEW_BACKENDS, QUOTA_BALANCE_TAIL
+    global UV, AGY, CODEX, AGY_MODEL, AGY_EFFORT, PROXY_URL, REVIEW_BACKENDS, QUOTA_BALANCE_TAIL
     config = runpy.run_path(str(UPLOADER))["load_config"]()
     for name, default in (("uv", UV), ("agy", AGY), ("codex", CODEX)):
         if name in config:
@@ -70,12 +73,13 @@ def configure():
             AGY = path
         else:
             CODEX = path
-    for key in ("model", "effort"):
+    for key in ("model", "effort", "proxy"):
         if key in config and config[key] is not None:
             if not isinstance(config[key], str) or not config[key].strip():
                 raise RuntimeError(f"config.json 的 {key} 必须是非空字符串。")
     AGY_MODEL = config.get("model") or None
     AGY_EFFORT = config.get("effort") or None
+    PROXY_URL = (config.get("proxy") or "").strip() or None
     if "review_backends" in config:
         raw_backends = config["review_backends"]
         if not isinstance(raw_backends, list) or not raw_backends:
@@ -205,6 +209,24 @@ def validate_review_payload(review, provider):
     return review
 
 
+def agy_env():
+    env = os.environ.copy()
+    if not PROXY_URL:
+        return env
+    parsed = urlparse(PROXY_URL)
+    host = parsed.hostname
+    port = parsed.port
+    if host and port:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                env.setdefault("HTTPS_PROXY", PROXY_URL)
+                env.setdefault("HTTP_PROXY", PROXY_URL)
+                env.setdefault("NO_PROXY", "localhost,127.0.0.1")
+        except OSError:
+            pass
+    return env
+
+
 def agy_review(work, stage, instructions, model=None, effort=None):
     if not AGY.is_file():
         raise RuntimeError(f"未找到 agy 可执行文件：{AGY}")
@@ -230,7 +252,7 @@ def agy_review(work, stage, instructions, model=None, effort=None):
         command.extend(["--effort", use_effort])
     command.extend(["--print", instructions])
     result = subprocess.run(
-        command, text=True, cwd=work, stdout=subprocess.PIPE,
+        command, text=True, cwd=work, env=agy_env(), stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, timeout=1800,
     )
     raw_out = (result.stdout or "").strip()
@@ -303,7 +325,7 @@ def query_agy_gemini_quota():
     try:
         result = subprocess.run(
             [str(AGY), "-p", "/usage"],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90,
+            text=True, env=agy_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90,
         )
     except (OSError, subprocess.SubprocessError):
         return None
