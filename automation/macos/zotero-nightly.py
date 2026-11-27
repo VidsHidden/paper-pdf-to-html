@@ -27,6 +27,8 @@ CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
 AGY_MODEL = None
 AGY_EFFORT = None
 PROXY_URL = None
+BACKUP_GIT_DIR = None
+BACKUP_HTML_DIR = None
 REVIEW_BACKENDS = []
 QUOTA_BALANCE_TAIL = False
 EXHAUSTED_BACKENDS = set()
@@ -56,9 +58,9 @@ def load_json(file):
 
 
 def configure():
-    global UV, AGY, CODEX, AGY_MODEL, AGY_EFFORT, PROXY_URL, REVIEW_BACKENDS, QUOTA_BALANCE_TAIL
+    global UV, AGY, CODEX, GLOSSARY, AGY_MODEL, AGY_EFFORT, PROXY_URL, BACKUP_GIT_DIR, BACKUP_HTML_DIR, REVIEW_BACKENDS, QUOTA_BALANCE_TAIL
     config = runpy.run_path(str(UPLOADER))["load_config"]()
-    for name, default in (("uv", UV), ("agy", AGY), ("codex", CODEX)):
+    for name, default in (("uv", UV), ("agy", AGY), ("codex", CODEX), ("glossary", GLOSSARY)):
         if name in config:
             if not isinstance(config[name], str):
                 raise RuntimeError(f"config.json 的 {name} 必须是绝对路径。")
@@ -71,8 +73,27 @@ def configure():
             UV = path
         elif name == "agy":
             AGY = path
-        else:
+        elif name == "codex":
             CODEX = path
+        else:
+            GLOSSARY = path
+    for field in ("backup_git_dir", "backup_html_dir"):
+        val = config.get(field)
+        if val is not None:
+            if not isinstance(val, str) or not val.strip():
+                raise RuntimeError(f"config.json 的 {field} 必须是绝对路径。")
+            bpath = Path(val).expanduser()
+            if not bpath.is_absolute():
+                raise RuntimeError(f"config.json 的 {field} 必须是绝对路径。")
+            if field == "backup_git_dir":
+                BACKUP_GIT_DIR = bpath
+            else:
+                BACKUP_HTML_DIR = bpath
+        else:
+            if field == "backup_git_dir":
+                BACKUP_GIT_DIR = None
+            else:
+                BACKUP_HTML_DIR = None
     for key in ("model", "effort", "proxy"):
         if key in config and config[key] is not None:
             if not isinstance(config[key], str) or not config[key].strip():
@@ -587,6 +608,80 @@ def job_folder(parent, pdf, fingerprint):
     return QUEUE / f"{parent}-{pdf}-{fingerprint[:12]}"
 
 
+def copy_if_changed(src, dst):
+    if not src.is_file():
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_file() and dst.stat().st_size == src.stat().st_size and digest(dst) == digest(src):
+        return False
+    temp = dst.with_suffix(dst.suffix + ".tmp")
+    shutil.copyfile(src, temp)
+    temp.replace(dst)
+    return True
+
+
+def readable_html_name(work, final):
+    pdfs = sorted(work.glob("*.pdf"))
+    if pdfs:
+        stem = re.sub(r"[/:\\]+", " - ", pdfs[0].stem).strip()
+        if stem:
+            return f"{stem}-zh.html"
+    return final.name
+
+
+def sync_backups():
+    if BACKUP_HTML_DIR is not None and QUEUE.is_dir():
+        BACKUP_HTML_DIR.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        for work in sorted(QUEUE.iterdir()):
+            approval = work / "approval.json"
+            if not work.is_dir() or not approval.is_file():
+                continue
+            try:
+                info = load_json(approval)
+                final = work / info["filename"]
+            except (OSError, ValueError, KeyError):
+                continue
+            if final.is_file():
+                dst = BACKUP_HTML_DIR / readable_html_name(work, final)
+                if copy_if_changed(final, dst):
+                    copied += 1
+        if GLOSSARY.is_file():
+            copy_if_changed(GLOSSARY, BACKUP_HTML_DIR / "PDF2html-terminology.md")
+        print(f"OneDrive 成品备份完成：新增/更新 {copied} 份 HTML（目录：{BACKUP_HTML_DIR}）。", flush=True)
+
+    if BACKUP_GIT_DIR is not None and (BACKUP_GIT_DIR / ".git").exists():
+        if GLOSSARY.is_file() and GLOSSARY.resolve() != (BACKUP_GIT_DIR / "PDF2html-terminology.md").resolve():
+            copy_if_changed(GLOSSARY, BACKUP_GIT_DIR / "PDF2html-terminology.md")
+        cfg = ROOT / "config.json"
+        if cfg.is_file():
+            copy_if_changed(cfg, BACKUP_GIT_DIR / "config.json")
+        if QUEUE.is_dir():
+            for work in sorted(QUEUE.iterdir()):
+                st = work / "suggested-terms.json"
+                if work.is_dir() and st.is_file():
+                    copy_if_changed(st, BACKUP_GIT_DIR / "suggested-terms" / f"{work.name}.json")
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=BACKUP_GIT_DIR, text=True, capture_output=True, check=True,
+        )
+        if status.stdout.strip():
+            stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+            subprocess.run(["git", "add", "-A"], cwd=BACKUP_GIT_DIR, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", f"Auto-backup glossary and metadata ({stamp})"],
+                cwd=BACKUP_GIT_DIR, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=BACKUP_GIT_DIR, env=agy_env(), check=True, timeout=60,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            print("GitHub 私人仓库备份已推送。", flush=True)
+        else:
+            print("GitHub 私人仓库备份无新增变动。", flush=True)
+
+
 def run_jobs(scan_only=False):
     transport = runpy.run_path(str(UPLOADER))
     zotero = transport["Zotero"]()
@@ -630,6 +725,10 @@ def run_jobs(scan_only=False):
                 failures += 1
                 print(f"PDF {pdf['key']} 处理失败：{exc}", file=sys.stderr, flush=True)
     print(f"本轮待处理 {pending} 份，失败 {failures} 份。", flush=True)
+    try:
+        sync_backups()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"备份同步异常（不影响主任务）：{exc}", file=sys.stderr, flush=True)
     if failures:
         raise RuntimeError("有处理失败的 PDF，见本轮日志。")
 
@@ -725,7 +824,7 @@ def run_with_idle_sleep_prevented():
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     subs = cli.add_subparsers(dest="command", required=True)
-    for action in ("check", "run", "install"):
+    for action in ("check", "run", "install", "backup"):
         subs.add_parser(action)
     layout = subs.add_parser("layout", help="将阅读器图表栏放在正文左侧")
     layout.add_argument("html", nargs="+", type=Path)
@@ -747,6 +846,8 @@ def main():
                     left_figure_rail(html)
             elif args.command == "check":
                 run_jobs(scan_only=True)
+            elif args.command == "backup":
+                sync_backups()
             else:
                 run_with_idle_sleep_prevented()
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

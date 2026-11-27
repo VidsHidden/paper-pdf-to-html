@@ -49,6 +49,9 @@ agy --help
    | `review_backends` | 可选，按优先级排列的审校后端降级链（如 `[{"engine":"agy","model":"claude-sonnet-5-5-medium"},{"engine":"agy","model":"gpt-oss-120b-medium"},{"engine":"agy"},{"engine":"codex"}]`）。当某个后端额度耗尽、限流或不可用时自动切换下一个，且本轮后续论文会直接跳过已耗尽额度的后端。 |
    | `quota_balance_tail` | 可选布尔值（默认 `false`）。设为 `true` 且最后两位为 `agy` 默认模型与 `codex` 时，仅在前面后端不可用而进入第 3/4 位前，实时查询 `agy /usage` 与 `codex app-server` 的周剩余额度及重置时间，按 `剩余周额度 / 距重置小时数` 自动优先使用额度更充裕或更快重置的一方。 |
    | `proxy` | 可选，本地 HTTP 代理地址（如 `http://127.0.0.1:7890`）。因为 `agy` 不自动读取 macOS 系统代理，若直连偶尔出现 `EOF`，填写后脚本会在代理端口在线时自动为 `agy` 注入 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`，代理关闭时自动直连。 |
+   | `glossary` | 可选，自定义个人术语库 `PDF2html-terminology.md` 的绝对路径（默认使用仓库内模板）。 |
+   | `backup_git_dir` | 可选，本地私人 Git 仓库绝对路径。填写后每轮任务结束会自动将术语库、`config.json` 与候选术语同步并 `commit & push` 到该仓库（也可手动运行 `zotero-nightly.py backup`）。 |
+   | `backup_html_dir` | 可选，网盘或本地目录绝对路径（如 OneDrive 文件夹）。填写后每轮任务结束会自动将已通过验收的成品 HTML 按原论文标题增量镜像备份到该目录。 |
 
 4. 在前台授权。在 Zotero 弹窗中选「始终允许」。脚本把写入授权存到当前用户的登录钥匙串。后台任务复用授权。
 
