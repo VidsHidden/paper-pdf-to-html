@@ -8,22 +8,17 @@
 
 - macOS 装有 Zotero 10 或更高版本。本文使用支持附件写入的 [Zotero 本机 API](https://www.zotero.org/support/dev/web_api/v3/local_api)，不需要 Zotero 网页 API 密钥。处理范围是个人文库指定分类直属的条目。
 - 安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Chrome。`/usr/bin/python3 --version` 应能运行。处理扫描 PDF 时还需要 Tesseract 和相应语言包。
-- 安装可用的 Codex CLI，并以运行任务的同一 macOS 用户登录。Codex 两次审校需要联网和可用的额度。脚本默认查找 ChatGPT Mac 应用内的 CLI，其次查找 PATH 上的 `codex`。登录状态可用同一个可执行文件的 `login status` 查看。
+- 安装可用的 Antigravity CLI（`agy`），并以运行任务的同一 macOS 用户完成登录。两次审校需要联网和可用的额度。脚本默认查找 `~/.local/bin/agy`，其次查找 PATH 上的 `agy`。
 
 先在线准备依赖和 Chrome 本机翻译组件。夜间转换器用 `uv --offline` 方式运行，复用缓存。
 
 ```sh
 uv run scripts/reader.py --help
 uv run scripts/reader.py models
+agy --help
 ```
 
-使用默认的 ChatGPT Mac 应用路径时，可以这样检查 Codex。独立安装的 CLI 可直接运行 `codex login status`。
-
-```sh
-"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex" login status
-```
-
-如果未登录，对同一个可执行文件运行 `login`。本机机翻不可用时，由 Codex 根据原文补译。启用本机机翻并不改变 Codex 联网审校的要求。
+如果尚未登录，先在终端运行 `agy` 按提示完成登录。本机机翻不可用时，由 Antigravity 根据原文补译。启用本机机翻并不改变 Antigravity 联网审校的要求。
 
 ## 2. 创建分类并保存写入权限
 
@@ -46,8 +41,13 @@ uv run scripts/reader.py models
    | 字段 | 用途 |
    | --- | --- |
    | `collection_key` | 目标 Zotero 分类标识，8 位大写字母或数字，必填。 |
-   | `uv` | uv 可执行文件，如 `/opt/homebrew/bin/uv`。 |
-   | `codex` | 已登录的 Codex CLI 可执行文件，如 `/opt/homebrew/bin/codex`。 |
+   | `uv` | uv 可执行文件，如 `/Users/yourname/.local/bin/uv`。 |
+   | `agy` | 已登录的 Antigravity CLI 可执行文件，如 `/Users/yourname/.local/bin/agy`。 |
+   | `codex` | 可选，备用 Codex CLI 绝对路径（默认自动查找 ChatGPT Mac 应用内的 `codex`）。 |
+   | `model` | 可选，指定默认 `agy` 审校所用的模型标识。 |
+   | `effort` | 可选，指定默认 `agy` 审校推理强度（`low`/`medium`/`high`/`xhigh`/`max`）。 |
+   | `review_backends` | 可选，按优先级排列的审校后端降级链（如 `[{"engine":"agy","model":"claude-sonnet-5-5-medium"},{"engine":"agy","model":"gpt-oss-120b-medium"},{"engine":"agy"},{"engine":"codex"}]`）。当某个后端额度耗尽、限流或不可用时自动切换下一个，且本轮后续论文会直接跳过已耗尽额度的后端。 |
+   | `quota_balance_tail` | 可选布尔值（默认 `false`）。设为 `true` 且最后两位为 `agy` 默认模型与 `codex` 时，仅在前面后端不可用而进入第 3/4 位前，实时查询 `agy /usage` 与 `codex app-server` 的周剩余额度及重置时间，按 `剩余周额度 / 距重置小时数` 自动优先使用额度更充裕或更快重置的一方。 |
 
 4. 在前台授权。在 Zotero 弹窗中选「始终允许」。脚本把写入授权存到当前用户的登录钥匙串。后台任务复用授权。
 
@@ -70,7 +70,7 @@ uv run scripts/reader.py models
 
 第一次 `check` 应列出测试 PDF。成功后，`run` 会显示「已确认 Zotero 存储副本」，最后一次 `check` 会跳过该 PDF。展开原条目，确认多了「中文版 HTML」子附件，并实际打开验证。宽屏应从左至右显示目录、图表栏和正文。
 
-脚本按原文提取、Codex 原文审校、本机翻译、Codex 译文审校、HTML 校验和附件回写的顺序处理。它使用 PDF 标识识别对应的 HTML，多个 PDF 可以分别有自己的阅读版。现有阅读版被跳过，常规成功路径无需人工审批。
+脚本按原文提取、Antigravity 原文审校、本机翻译、Antigravity 译文审校、HTML 校验和附件回写的顺序处理。它使用 PDF 标识识别对应的 HTML，多个 PDF 可以分别有自己的阅读版。现有阅读版被跳过，常规成功路径无需人工审批。
 
 ## 4. 安装每天北京时间 22:30 的任务
 
@@ -92,15 +92,17 @@ tail -f automation/macos/zotero-nightly.log
 
 ## 5. 设置唤醒并做一次过夜验收
 
-首次验证时让 Mac 接电、保持登录，Zotero 留在后台，先用开盖熄屏的方式测试。运行期间脚本用 `caffeinate -i` 阻止空闲睡眠，退出后释放该限制，电脑按自身电源设置休眠。
+首次验证时让 Mac 接电、保持登录，Zotero 留在后台，先用开盖熄屏的方式测试。运行期间脚本用 `caffeinate -is` 阻止空闲与插电系统睡眠，退出后释放该限制，电脑按自身电源设置休眠。
 
-如需在计划时间前唤醒，先用 `pmset -g sched` 检查现有重复电源计划。下面的命令会设置每天 22:28 唤醒，可能替换已有重复计划。
+如需在计划时间前唤醒，先用 `pmset -g sched` 检查现有重复电源计划。下面的命令会设置每天 22:29:45 唤醒（紧贴 22:30 任务启动），可能替换已有重复计划。
 
 ```sh
 pmset -g sched
-sudo pmset repeat wake MTWRFSU 22:28:00
+sudo pmset repeat wake MTWRFSU 22:29:45
 pmset -g sched
 ```
+
+如果习惯合盖过夜（无外接显示器），`caffeinate` 无法阻止 macOS 的 `Clamshell Sleep`。可在 Mac App Store 安装免费的 **Amphetamine**（配合官方 **Amphetamine Enhancer**），并在「触发器」中新增一条规则：仅在**连接电源适配器**且为**每天 22:28–04:00** 时生效，勾选「允许显示器睡眠」、取消勾选「当显示器睡眠时允许系统睡眠」，同时在「通用」勾选「开机时运行 Amphetamine」。这样既保证夜间插电合盖持续跑完批处理，又不影响白天离电合盖正常休眠。
 
 如果也要复现「接电空闲 10 分钟后休眠」的电源配置，可运行 `sudo pmset -c sleep 10`。这会修改接电时的系统空闲睡眠定时器。实际睡眠还受当前电源配置和系统活动影响。
 

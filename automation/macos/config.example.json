@@ -1,3 +1,20 @@
 {
-  "collection_key": "REPLACE_ME"
+  "collection_key": "REPLACE_ME",
+  "quota_balance_tail": true,
+  "review_backends": [
+    {
+      "engine": "agy",
+      "model": "claude-sonnet-5-5-medium"
+    },
+    {
+      "engine": "agy",
+      "model": "gpt-oss-120b-medium"
+    },
+    {
+      "engine": "agy"
+    },
+    {
+      "engine": "codex"
+    }
+  ]
 }

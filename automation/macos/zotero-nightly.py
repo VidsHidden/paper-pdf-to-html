@@ -11,6 +11,8 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -18,7 +20,13 @@ SCRIPT = Path(__file__).resolve()
 UPLOADER = ROOT / "zotero-attach-html.py"
 READER = ROOT.parent.parent / "scripts/reader.py"
 UV = Path.home() / ".local/bin/uv"
+AGY = Path.home() / ".local/bin/agy"
 CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+AGY_MODEL = None
+AGY_EFFORT = None
+REVIEW_BACKENDS = []
+QUOTA_BALANCE_TAIL = False
+EXHAUSTED_BACKENDS = set()
 GLOSSARY = ROOT / "PDF2html-terminology.md"
 QUEUE = ROOT / "zotero-review-queue"
 LABEL = "org.paper-pdf-to-html.zotero-nightly"
@@ -45,9 +53,9 @@ def load_json(file):
 
 
 def configure():
-    global UV, CODEX
+    global UV, AGY, CODEX, AGY_MODEL, AGY_EFFORT, REVIEW_BACKENDS, QUOTA_BALANCE_TAIL
     config = runpy.run_path(str(UPLOADER))["load_config"]()
-    for name, default in (("uv", UV), ("codex", CODEX)):
+    for name, default in (("uv", UV), ("agy", AGY), ("codex", CODEX)):
         if name in config:
             if not isinstance(config[name], str):
                 raise RuntimeError(f"config.json 的 {name} 必须是绝对路径。")
@@ -58,8 +66,43 @@ def configure():
             path = default if default.is_file() else Path(shutil.which(name) or default)
         if name == "uv":
             UV = path
+        elif name == "agy":
+            AGY = path
         else:
             CODEX = path
+    for key in ("model", "effort"):
+        if key in config and config[key] is not None:
+            if not isinstance(config[key], str) or not config[key].strip():
+                raise RuntimeError(f"config.json 的 {key} 必须是非空字符串。")
+    AGY_MODEL = config.get("model") or None
+    AGY_EFFORT = config.get("effort") or None
+    if "review_backends" in config:
+        raw_backends = config["review_backends"]
+        if not isinstance(raw_backends, list) or not raw_backends:
+            raise RuntimeError("config.json 的 review_backends 必须是非空数组。")
+        parsed = []
+        for entry in raw_backends:
+            if not isinstance(entry, dict) or entry.get("engine") not in {"agy", "codex"}:
+                raise RuntimeError("review_backends 的每项必须是对象且 engine 为 agy 或 codex。")
+            item = {"engine": entry["engine"]}
+            for field in ("model", "effort"):
+                if field in entry and entry[field] is not None:
+                    if not isinstance(entry[field], str) or not entry[field].strip():
+                        raise RuntimeError(f"review_backends 的 {field} 必须是非空字符串。")
+                    item[field] = entry[field].strip()
+            parsed.append(item)
+        REVIEW_BACKENDS = parsed
+    else:
+        primary = {"engine": "agy"}
+        if AGY_MODEL:
+            primary["model"] = AGY_MODEL
+        if AGY_EFFORT:
+            primary["effort"] = AGY_EFFORT
+        REVIEW_BACKENDS = [primary]
+        if AGY_MODEL != "gemini-3.8-flash-medium":
+            REVIEW_BACKENDS.append({"engine": "agy", "model": "gemini-3.8-flash-medium"})
+        REVIEW_BACKENDS.append({"engine": "codex"})
+    QUOTA_BALANCE_TAIL = bool(config.get("quota_balance_tail", False))
 
 
 def reader(*args):
@@ -140,7 +183,82 @@ REVIEW_SCHEMA = {
 }
 
 
-def codex_review(work, stage, instructions):
+QUOTA_ERROR_RE = re.compile(
+    r"quota|rate.?limit|429|exhaust|capacity|credit|insufficient|usage limit|too many requests|limit exceeded|resource_exhausted",
+    re.I,
+)
+
+
+def backend_label(backend):
+    engine = backend["engine"]
+    model = backend.get("model") or "default"
+    effort = backend.get("effort")
+    return f"{engine}({model}/{effort})" if effort else f"{engine}({model})"
+
+
+def validate_review_payload(review, provider):
+    if (not isinstance(review, dict) or set(review) != {"status", "notes"}
+        or review["status"] not in {"ready", "needs_review"}
+        or not isinstance(review["notes"], list)
+        or any(not isinstance(note, str) for note in review["notes"])):
+        raise RuntimeError(f"{provider} 返回的审校结果格式无效。")
+    return review
+
+
+def agy_review(work, stage, instructions, model=None, effort=None):
+    if not AGY.is_file():
+        raise RuntimeError(f"未找到 agy 可执行文件：{AGY}")
+    schema = work / "agy-review-schema.json"
+    outcome = work / f"agy-{stage}-result.json"
+    save_json(schema, REVIEW_SCHEMA)
+    outcome.unlink(missing_ok=True)
+    command = [
+        str(AGY),
+        "--mode", "auto",
+        "--sandbox",
+        "--dangerously-skip-permissions",
+        "--disable-slash-commands",
+        "--output-format", "json",
+        "--json-schema", str(schema),
+        "--print-timeout", "30m",
+    ]
+    use_model = model if model is not None else AGY_MODEL
+    use_effort = effort if effort is not None else AGY_EFFORT
+    if use_model:
+        command.extend(["--model", use_model])
+    if use_effort:
+        command.extend(["--effort", use_effort])
+    command.extend(["--print", instructions])
+    result = subprocess.run(
+        command, text=True, cwd=work, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=1800,
+    )
+    raw_out = (result.stdout or "").strip()
+    if result.returncode or not raw_out:
+        errors = (result.stderr or "").splitlines()
+        diagnostics = [line for line in errors if re.search(r"error|failed|limit|quota|429|connect", line, re.I)]
+        error = diagnostics[-1][:300] if diagnostics else f"退出码 {result.returncode}"
+        raise RuntimeError(f"Antigravity {stage} 审校未完成：{error}")
+    try:
+        envelope = json.loads(raw_out)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Antigravity {stage} 审校输出不是有效 JSON：{exc}") from exc
+    save_json(outcome, envelope)
+    if envelope.get("status") != "SUCCESS":
+        detail = envelope.get("error") or envelope.get("message") or envelope.get("status")
+        raise RuntimeError(f"Antigravity {stage} 审校状态异常：{detail}")
+    review = envelope.get("structured_output")
+    if review is None and isinstance(envelope.get("response"), str):
+        try:
+            review = json.loads(envelope["response"])
+        except json.JSONDecodeError:
+            review = None
+    return validate_review_payload(review, "Antigravity")
+
+
+def codex_review(work, stage, instructions, model=None):
+    if not CODEX.is_file():
+        raise RuntimeError(f"未找到 codex 可执行文件：{CODEX}")
     schema = work / "codex-review-schema.json"
     outcome = work / f"codex-{stage}-result.json"
     save_json(schema, REVIEW_SCHEMA)
@@ -148,24 +266,201 @@ def codex_review(work, stage, instructions):
     command = [
         str(CODEX), "-a", "never", "exec", "--ignore-user-config", "--ephemeral",
         "--sandbox", "workspace-write", "--skip-git-repo-check", "--cd", str(work),
-        "--output-schema", str(schema), "--output-last-message", str(outcome), "-",
+        "--output-schema", str(schema), "--output-last-message", str(outcome),
     ]
+    if model:
+        command.extend(["--model", model])
+    command.append("-")
     result = subprocess.run(
         command, input=instructions, text=True, cwd=work, stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE, timeout=1800,
     )
     if result.returncode or not outcome.is_file():
         errors = (result.stderr or "").splitlines()
-        diagnostics = [line for line in errors if re.search(r"error|failed|limit|connect", line, re.I)]
+        diagnostics = [line for line in errors if re.search(r"error|failed|limit|quota|429|connect", line, re.I)]
         error = diagnostics[-1][:300] if diagnostics else f"退出码 {result.returncode}"
         raise RuntimeError(f"Codex {stage} 审校未完成：{error}")
-    review = load_json(outcome)
-    if (not isinstance(review, dict) or set(review) != {"status", "notes"}
-        or review["status"] not in {"ready", "needs_review"}
-        or not isinstance(review["notes"], list)
-        or any(not isinstance(note, str) for note in review["notes"])):
-        raise RuntimeError("Codex 返回的审校结果格式无效。")
-    return review
+    return validate_review_payload(load_json(outcome), "Codex")
+
+
+def parse_quota_timestamp(raw):
+    text = raw.strip()
+    if text.startswith("1970-01-01"):
+        return None
+    m_iso = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z$", text)
+    if m_iso:
+        return datetime.strptime(m_iso.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    m_cst = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})", text)
+    if m_cst:
+        cst = timezone(timedelta(hours=8))
+        return datetime.strptime(m_cst.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=cst).timestamp()
+    return None
+
+
+def query_agy_gemini_quota():
+    if not AGY.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(AGY), "-p", "/usage"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return None
+    weekly_pct = None
+    weekly_reset = None
+    five_hour_pct = None
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    for raw_line in (result.stdout or "").splitlines():
+        line = ansi_re.sub("", raw_line).strip()
+        m = re.match(
+            r"^Gemini Models\s+Weekly Limit Remaining\s+(\d+)%\s+(.+)$",
+            line,
+        )
+        if m:
+            weekly_pct = int(m.group(1))
+            weekly_reset = parse_quota_timestamp(m.group(2))
+            continue
+        m5 = re.match(r"^Gemini Models\s+Five Hour Limit Remaining\s+(\d+)%", line)
+        if m5:
+            five_hour_pct = int(m5.group(1))
+    if weekly_pct is None or weekly_reset is None:
+        return None
+    return {
+        "weekly_remaining": weekly_pct,
+        "five_hour_remaining": five_hour_pct if five_hour_pct is not None else 100,
+        "resets_at": weekly_reset,
+    }
+
+
+def query_codex_quota():
+    if not CODEX.is_file():
+        return None
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [str(CODEX), "app-server", "--stdio"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        requests = (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"clientInfo": {"name": "zotero-nightly", "version": "1.0"}}},
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}},
+        )
+        for req in requests:
+            proc.stdin.write(json.dumps(req) + "\n")
+        proc.stdin.flush()
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("id") != 2:
+                continue
+            rl = (msg.get("result") or {}).get("rateLimits") or {}
+            secondary = rl.get("secondary") or {}
+            primary = rl.get("primary") or {}
+            used_w = secondary.get("usedPercent")
+            resets_at = secondary.get("resetsAt")
+            if used_w is None or resets_at is None:
+                return None
+            used_5h = primary.get("usedPercent", 0)
+            return {
+                "weekly_remaining": max(0, 100 - int(used_w)),
+                "five_hour_remaining": max(0, 100 - int(used_5h)),
+                "resets_at": float(resets_at),
+            }
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.SubprocessError:
+                proc.kill()
+    return None
+
+
+def quota_priority_score(info, now):
+    if info["weekly_remaining"] <= 0 or info["five_hour_remaining"] <= 0:
+        return -1.0
+    hours_left = max((info["resets_at"] - now) / 3600.0, 1.0)
+    return info["weekly_remaining"] / hours_left
+
+
+def resolve_review_backends(backends):
+    if not QUOTA_BALANCE_TAIL or len(backends) < 2:
+        return list(backends)
+    head = list(backends[:-2])
+    tail = list(backends[-2:])
+    agy_item = next((b for b in tail if b["engine"] == "agy" and not b.get("model")), None)
+    codex_item = next((b for b in tail if b["engine"] == "codex"), None)
+    if not agy_item or not codex_item:
+        return list(backends)
+    if backend_label(agy_item) in EXHAUSTED_BACKENDS or backend_label(codex_item) in EXHAUSTED_BACKENDS:
+        return list(backends)
+    agy_q = query_agy_gemini_quota()
+    codex_q = query_codex_quota()
+    if not agy_q or not codex_q:
+        return list(backends)
+    now = time.time()
+    agy_score = quota_priority_score(agy_q, now)
+    codex_score = quota_priority_score(codex_q, now)
+    cst = timezone(timedelta(hours=8))
+    agy_reset = datetime.fromtimestamp(agy_q["resets_at"], tz=cst).strftime("%m-%d %H:%M")
+    codex_reset = datetime.fromtimestamp(codex_q["resets_at"], tz=cst).strftime("%m-%d %H:%M")
+    ordered_tail = [codex_item, agy_item] if codex_score > agy_score else [agy_item, codex_item]
+    print(
+        f"第 3/4 位额度决策：Gemini 周余 {agy_q['weekly_remaining']}%（{agy_reset} 重置，{agy_score:.2f}%/h）"
+        f" vs Codex 周余 {codex_q['weekly_remaining']}%（{codex_reset} 重置，{codex_score:.2f}%/h）"
+        f" → 优先 {backend_label(ordered_tail[0])}，备用 {backend_label(ordered_tail[1])}。",
+        flush=True,
+    )
+    return head + ordered_tail
+
+
+def run_review(work, stage, instructions):
+    backends = REVIEW_BACKENDS or [{"engine": "agy"}, {"engine": "codex"}]
+    errors = []
+    tail_reordered = False
+    index = 0
+    while index < len(backends):
+        # Only query live quotas when we actually reach the final 2-backend pair (slots 3 & 4).
+        if QUOTA_BALANCE_TAIL and not tail_reordered and len(backends) >= 2 and index == len(backends) - 2:
+            backends = resolve_review_backends(backends)
+            tail_reordered = True
+        backend = backends[index]
+        index += 1
+        label = backend_label(backend)
+        if label in EXHAUSTED_BACKENDS:
+            print(f"{stage}审校跳过本轮已耗尽额度的后端：{label}", flush=True)
+            continue
+        try:
+            if backend["engine"] == "agy":
+                review = agy_review(
+                    work, stage, instructions,
+                    model=backend.get("model"),
+                    effort=backend.get("effort"),
+                )
+            else:
+                review = codex_review(work, stage, instructions, model=backend.get("model"))
+            print(f"{stage}审校完成（后端：{label}，状态：{review['status']}）。", flush=True)
+            return review
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            message = str(exc)
+            errors.append(f"{label}: {message}")
+            if QUOTA_ERROR_RE.search(message):
+                EXHAUSTED_BACKENDS.add(label)
+            print(f"{stage}审校后端 {label} 失败（{message}），尝试切换备用后端。", flush=True)
+    raise RuntimeError(f"所有审校后端均失败（{stage}）：" + "；".join(errors))
 
 
 def source_instructions(original, findings):
@@ -219,7 +514,7 @@ def prepare(work, source, fingerprint):
     audit = work / "reviewed-source.json"
     article = work / "article.html"
     if not audit.is_file() or load_json(audit).get("article_sha256") != digest(article):
-        review = codex_review(work, "原文", source_instructions(original, findings))
+        review = run_review(work, "原文", source_instructions(original, findings))
         if digest(original) != fingerprint:
             raise RuntimeError("工作目录中的源 PDF 内容发生变化。")
         if review["status"] != "ready":
@@ -231,7 +526,7 @@ def prepare(work, source, fingerprint):
         # translate also rebuilds translation-input.json from the reviewed source.
         reader("translate", "--work", work, "--translator", "local")
     except subprocess.SubprocessError:
-        print("本机机翻不可用，本篇由 Codex 对照原文补译。", flush=True)
+        print("本机机翻不可用，本篇由 Antigravity 对照原文补译。", flush=True)
     _, terms = extraction_findings(work)
     rows = load_json(work / "translation-input.json")
     if any(re.search(r"legend on next page|caption on next page|�", row["text"], re.I)
@@ -246,8 +541,8 @@ def prepare(work, source, fingerprint):
                   if term["chinese"] not in initial.get(block, "")][:150]
     reviewed = work / "translations-reviewed.json"
     reviewed.unlink(missing_ok=True)
-    review = codex_review(work, "译文", translation_instructions()
-                          + "\n术语初筛：" + json.dumps(mismatches, ensure_ascii=False))
+    review = run_review(work, "译文", translation_instructions()
+                        + "\n术语初筛：" + json.dumps(mismatches, ensure_ascii=False))
     if digest(original) != fingerprint or load_json(audit)["article_sha256"] != digest(article):
         raise RuntimeError("译文审校期间原文底稿发生变化。")
     if review["status"] != "ready":
@@ -356,7 +651,7 @@ def launch_config():
         "WorkingDirectory": str(ROOT),
         "StartCalendarInterval": {"Hour": 22, "Minute": 30},
         "EnvironmentVariables": {
-            "PATH": f"{UV.parent}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": f"{UV.parent}:{AGY.parent}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
         "StandardOutPath": str(logs),
@@ -371,7 +666,7 @@ def launchctl(*args, check=True):
 def install():
     if Path("/etc/localtime").resolve().parts[-2:] != BEIJING:
         raise RuntimeError("Mac 时区需要为 Asia/Shanghai，22:30 才对应北京时间。")
-    for file in (UV, UPLOADER, READER, GLOSSARY, CODEX):
+    for file in (UV, UPLOADER, READER, GLOSSARY, AGY):
         if not file.is_file():
             raise RuntimeError(f"缺少运行文件：{file}")
     # Run the read-only preflight before registering any scheduled job.
@@ -397,7 +692,7 @@ def install():
 
 def run_with_idle_sleep_prevented():
     # The assertion keeps the Mac awake without keeping its display on.
-    hold = subprocess.Popen(["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())])
+    hold = subprocess.Popen(["/usr/bin/caffeinate", "-is", "-w", str(os.getpid())])
     try:
         run_jobs()
     finally:
